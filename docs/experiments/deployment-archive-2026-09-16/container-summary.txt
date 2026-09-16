@@ -1,0 +1,75 @@
+# routellm-deploy 启动参数留档
+留档时间: 2026-09-16T19:35:54+08:00
+主机: server43-X640-G40
+
+## 镜像
+routellm-eng:dev  (image id sha256:eb6f1105106bea3263b405423229657547f94df93499a7f1e6b5cfc609ce0a8d)
+
+## 启动命令
+Entrypoint=null
+Cmd=["python","-m","routellm.openai_server","--host","0.0.0.0","--port","6060"]
+WorkingDir=/app
+
+## 重启策略 / 特权 / 资源
+RestartPolicy=no
+Privileged=false
+NetworkMode=default
+
+## 端口映射
+{"6060/tcp":[{"HostIp":"127.0.0.1","HostPort":"6060"}]}
+
+## 网络
+{"bridge":{"IPAMConfig":null,"Links":null,"Aliases":null,"MacAddress":"02:42:ac:12:00:02","NetworkID":"dcc3afd021008d6a7c6ab961fd5fc7dd047b137ae3e597fd94a3db5d30786d77","EndpointID":"2cc247eefb03dfbe9666d76b5a2c69737d8d85e14d751cb446410795bcc464d7","Gateway":"172.18.0.1","IPAddress":"172.18.0.2","IPPrefixLen":16,"IPv6Gateway":"","GlobalIPv6Address":"","GlobalIPv6PrefixLen":0,"DriverOpts":null,"DNSNames":null}}
+
+## ExtraHosts
+["host.docker.internal:host-gateway"]
+
+## 环境变量（敏感值已打码，保留长度+sha256前12位用于校验一致性）
+ROUTELLM_STRONG_MODEL=openai/deepseek-ai/DeepSeek-V4-Pro
+ROUTELLM_WEAK_MODEL=openai/deepseek-ai/DeepSeek-V4-Flash
+ROUTELLM_API_BASE=https://api.siliconflow.cn/v1
+ROUTELLM_API_KEY=<masked len=51 sha256=13ef285d3103>
+ROUTELLM_INFERENCE_URL=http://host.docker.internal:6070
+ROUTELLM_ROUTERS=remote_bert
+PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LANG=C.UTF-8
+GPG_KEY=<masked len=40 sha256=02978be54c8b>
+PYTHON_VERSION=3.10.21
+PYTHON_SHA256=a0da1e72132e950154eca0f6f47d5db828454700de20e5113667940d81e0db04
+ROUTELLM_PORT=6060
+PYTHONUNBUFFERED=1
+
+## 健康检查
+{"Test":["CMD-SHELL","curl -fsS http://127.0.0.1:6060/health || exit 1"],"Interval":30000000000,"Timeout":5000000000,"StartPeriod":30000000000,"Retries":3}
+
+## 挂载
+[]
+
+## 日志驱动
+LogConfig={"Type":"json-file","Config":{}}
+
+## compose 标签（预期为空=非 compose 管理）
+project= service=
+
+## 回滚命令（重建为当前手工 docker run 等价状态）
+# 注意：需先按 env-masked.txt 补齐真实 key（值取自 43 上现有容器或 .env）
+cat <<'RC'
+docker rm -f routellm-deploy
+docker run -d \
+  --name routellm-deploy \
+  -p 127.0.0.1:6060:6060 \
+  --add-host host.docker.internal:host-gateway \
+  --restart no \
+  -e ROUTELLM_STRONG_MODEL=openai/deepseek-ai/DeepSeek-V4-Pro \
+  -e ROUTELLM_WEAK_MODEL=openai/deepseek-ai/DeepSeek-V4-Flash \
+  -e ROUTELLM_API_BASE=https://api.siliconflow.cn/v1 \
+  -e ROUTELLM_API_KEY=<需填真实值> \
+  -e ROUTELLM_INFERENCE_URL=http://host.docker.internal:6070 \
+  -e ROUTELLM_ROUTERS=remote_bert \
+  -e ROUTELLM_PORT=6060 \
+  -e PYTHONUNBUFFERED=1 \
+  --health-cmd "curl -fsS http://127.0.0.1:6060/health || exit 1" \
+  --health-interval 30s --health-timeout 5s --health-start-period 30s --health-retries 3 \
+  routellm-eng:dev \
+  python -m routellm.openai_server --host 0.0.0.0 --port 6060
+RC
