@@ -260,4 +260,10 @@ ROUTER_CLS = {
     "bert": BERTRouter,
     "sw_ranking": SWRankingRouter,
 }
+
+# remote_bert 延迟导入：remote.py 依赖本模块的 Router 基类，
+# 模块级导入会形成循环依赖。
+from routellm.routers.remote import RemoteBERTRouter as _RemoteBERTRouter  # noqa: E402
+
+ROUTER_CLS["remote_bert"] = _RemoteBERTRouter
 NAME_TO_CLS = {v: k for k, v in ROUTER_CLS.items()}

@@ -1,0 +1,167 @@
+"""远程推理路由器：把模型推理委托给 host 上的独立推理服务。
+
+背景与设计依据见 docs/decisions/ADR-001-inference-service-on-host.md。
+
+上游的 BERTRouter / CausalLLMRouter 在进程内用 transformers 加载模型，
+导致容器需要 CUDA torch + 模型权重。本模块提供 HTTP 版本，把推理下沉到
+host 服务（services/inference_server.py），容器只保留路由逻辑。
+
+契约与上游完全一致：实现 Router 抽象接口，win_rate 语义相同
+（1 - sum(softmax[-2:])，表示应路由到强模型的程度），因此可被
+Controller 无缝替换。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import urllib.error
+import urllib.request
+from typing import Any, Dict, List, Optional
+
+from routellm.routers.routers import Router
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TIMEOUT = 30.0
+DEFAULT_BATCH_SIZE = 64
+
+
+class RemoteInferenceError(Exception):
+    """推理服务调用失败，或返回了不可用的响应。"""
+
+
+class RemoteBERTRouter(Router):
+    """通过 HTTP 调用 host 推理服务完成路由评分。
+
+    Args:
+        base_url: 推理服务地址，如 ``http://127.0.0.1:6070``
+        timeout: 单次 HTTP 请求超时（秒）
+        batch_size: 批量评分的分片大小；超过则拆成多次请求
+        model_type: 服务侧的模型类型，默认 ``bert``
+
+    用法::
+
+        router = RemoteBERTRouter(base_url="http://host.docker.internal:6070")
+        win_rate = router.calculate_strong_win_rate(prompt)
+    """
+
+    NO_PARALLEL = True  # 走 HTTP 调用，pandarallel 多进程无意义且引入依赖
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = DEFAULT_TIMEOUT,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        model_type: str = "bert",
+    ):
+        if not base_url:
+            raise ValueError("base_url is required")
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.batch_size = int(batch_size)
+        self.model_type = model_type
+
+        # 懒加载的 opener，便于测试与复用连接
+        self._opener = urllib.request.build_opener()
+
+    # ------------------------------------------------------------------
+    # HTTP 层
+    # ------------------------------------------------------------------
+    def _post_score(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /v1/score，返回解析后的 JSON。
+
+        独立成方法，便于测试时 mock。
+        """
+        url = f"{self.base_url}/v1/score"
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data)
+        req.add_header("Content-Type", "application/json")
+
+        try:
+            with self._opener.open(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8")[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            raise RemoteInferenceError(
+                f"inference service returned HTTP {e.code} for {url}: {body}"
+            ) from e
+        except urllib.error.URLError as e:
+            raise RemoteInferenceError(
+                f"cannot reach inference service at {url}: {e.reason}"
+            ) from e
+        except json.JSONDecodeError as e:
+            raise RemoteInferenceError(
+                f"inference service returned invalid JSON: {e}"
+            ) from e
+        except Exception as e:  # noqa: BLE001
+            raise RemoteInferenceError(
+                f"unexpected error calling {url}: {type(e).__name__}: {e}"
+            ) from e
+
+    @staticmethod
+    def _extract_win_rates(resp: Dict[str, Any], expected: int) -> List[float]:
+        """从响应中提取 win_rate 列表，校验结构。"""
+        if not isinstance(resp, dict) or "results" not in resp:
+            raise RemoteInferenceError(
+                f"malformed response, missing 'results': {str(resp)[:200]}"
+            )
+        results = resp["results"]
+        if not isinstance(results, list):
+            raise RemoteInferenceError(
+                f"malformed response, 'results' is not a list: {type(results).__name__}"
+            )
+        if len(results) != expected:
+            raise RemoteInferenceError(
+                f"result count mismatch: expected {expected}, got {len(results)}"
+            )
+        out: List[float] = []
+        for i, item in enumerate(results):
+            if not isinstance(item, dict) or "win_rate" not in item:
+                raise RemoteInferenceError(
+                    f"malformed result at index {i}, missing 'win_rate': {str(item)[:120]}"
+                )
+            out.append(float(item["win_rate"]))
+        return out
+
+    # ------------------------------------------------------------------
+    # Router 契约
+    # ------------------------------------------------------------------
+    def calculate_strong_win_rate(self, prompt: str) -> float:
+        """单条评分。走批量接口，避免两套代码路径。"""
+        return self.calculate_strong_win_rate_batch([prompt])[0]
+
+    def calculate_strong_win_rate_batch(self, prompts: List[str]) -> List[float]:
+        """批量评分。超长列表按 batch_size 分片，顺序保持不变。"""
+        if not prompts:
+            return []
+
+        out: List[float] = []
+        for start in range(0, len(prompts), self.batch_size):
+            chunk = prompts[start : start + self.batch_size]
+            resp = self._post_score({"prompts": chunk})
+            out.extend(self._extract_win_rates(resp, len(chunk)))
+        return out
+
+    # ------------------------------------------------------------------
+    # 运维辅助
+    # ------------------------------------------------------------------
+    def health(self) -> Dict[str, Any]:
+        """查询推理服务健康状态。"""
+        url = f"{self.base_url}/health"
+        try:
+            with self._opener.open(url, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            raise RemoteInferenceError(f"health check failed for {url}: {e}") from e
+
+    def __repr__(self) -> str:
+        return (
+            f"RemoteBERTRouter(base_url={self.base_url!r}, "
+            f"timeout={self.timeout}, batch_size={self.batch_size}, "
+            f"model_type={self.model_type!r})"
+        )

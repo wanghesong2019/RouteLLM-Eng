@@ -141,3 +141,53 @@ collected 0 items
 模型支持：`bert` 已实现验证；`causal_llm` 接口占位（权重 17GB，待接入）。
 
 详细记录见 `docs/experiments/2026-09-16-inference-api-validation.md`。
+
+### 9. 链路打通：RemoteBERTRouter
+
+新增 `routellm/routers/remote.py`，实现上游 `Router` 抽象接口，通过 HTTP 调用组件 8 的推理服务。
+注册为 `remote_bert`（延迟导入避免循环依赖）。
+
+**TDD**：先写 19 个测试确认 RED（`ModuleNotFoundError`），实现后全绿。
+
+**过程中确认的两件事**：
+
+1. `Controller.route()` **不记录** `model_counts`，只有 completion 路径记录（上游行为）
+2. **上游依赖缺陷**：`batch_calculate_win_rate` 对 `NO_PARALLEL = False` 的路由器
+   会调 `prompts.parallel_apply()`，但 `pandarallel` 仅在 `eval` extra 中，非核心依赖。
+   上游 `random` 路由器走评测路径必 `AttributeError`。
+   → `RemoteBERTRouter` 设 `NO_PARALLEL = True`（HTTP 场景下进程池无收益）。
+
+**端到端验证（33 → SSH 隧道 → 43:6070）**：
+
+| 项 | 结果 |
+|---|---|
+| 跨机器 win_rate 一致性 | 3 例逐位一致（0.2970 / 0.4007 / 0.1993） |
+| 路由决策 | Controller + `remote_bert` 正常决策 |
+| 批量（经隧道） | 100 条 114.2ms（1.14ms/条） |
+| 错误处理 | 服务不可达 → `RemoteInferenceError` ✓ |
+
+**重要发现 — 影响 Docker 化部署位置**：
+
+43 号机防火墙**仅开放 SSH 端口**（20007/20031），6070/8090 从外部不可达。
+
+```
+33 → 43 探测:  22 filtered | 20007 OPEN | 20031 OPEN | 6070 filtered | 8090 filtered
+```
+
+"容器在 33、推理在 43"的方案**不可行**（网络隔离）。→ **Docker 化时两者都部署在 43**：
+推理服务在 host，RouteLLM 容器经 `host.docker.internal:6070` 访问。
+
+详细记录见 `docs/experiments/2026-09-16-remote-router-e2e.md`。
+
+### 10. 测试体系（从零建立）
+
+```
+tests/
+├── __init__.py
+├── test_remote_bert_router.py    12 个：契约 / 行为 / 错误处理
+└── test_router_registration.py    7 个：注册 / Controller 集成
+```
+
+运行：`pytest tests/ -v` → **19 passed**
+
+这是本仓库第一个可运行的自动化测试体系（上游 `routellm/tests/` 是手工脚本，收集 0 items）。
