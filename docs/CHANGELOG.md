@@ -119,3 +119,25 @@ collected 0 items
 | 4 | 无任何自动化测试 | `routellm/tests/` | 高 |
 | 5 | Pydantic V1 风格 `@validator`（6 处），V3 将移除 | `causal_llm/prompt_format.py` | 低 |
 | 6 | 下游模型名需 provider 前缀，否则 litellm 报错 | 配置层 | 中 |
+
+### 8. 推理服务实现与验证
+
+`services/inference_server.py`（独立实现，不 import `routellm` 包）
+
+四个端点：`POST /v1/score`（批量评分，主接口）、`GET /health`、`GET /v1/models`、`GET /selfcheck`
+
+**实测（43 号机，RTX 4090）**：
+
+| 指标 | 结果 |
+|---|---|
+| 与上游一致性 | `/selfcheck` → `matches: true`（浮点误差 < 1e-9） |
+| 单条延迟（含 HTTP） | p50 10.7ms / p95 16.0ms |
+| HTTP 往返开销 | ≈ 4.6ms（纯推理 6.1ms） |
+| Batch 加速 | batch=128 → **68.78x**（10.18ms → 0.15ms/item） |
+| MMLU 14000 题推算 | 1.3s（batch=500 × 28 批）；单条请求需 142s |
+| 并发吞吐 | 368.9 items/s（10 并发 × 4 prompt） |
+| 错误处理 | 空列表 / 缺字段 → HTTP 422（Pydantic 校验） |
+
+模型支持：`bert` 已实现验证；`causal_llm` 接口占位（权重 17GB，待接入）。
+
+详细记录见 `docs/experiments/2026-09-16-inference-api-validation.md`。
