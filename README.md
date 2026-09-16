@@ -20,6 +20,30 @@ RouteLLM 是 LMSYS（Chatbot Arena 团队）开源的 LLM 路由框架：根据 
 
 改造方案的**唯一权威依据**是 jobfinding 仓库中的方案文档，本仓库只承载实现。
 
+## 文档索引
+
+改造过程与决策全部留痕：
+
+| 路径 | 内容 |
+|------|------|
+| `docs/CHANGELOG.md` | 改造日志：按时间记录每一步、实测数据、发现的问题 |
+| `docs/experiments/` | 验证实验：脚本 + 实测输出 + 结论（含失败实验） |
+| `docs/decisions/` | 技术决策记录（ADR）：选了什么、排除了什么、为什么 |
+| `scripts/` | 一次性验证脚本与运维辅助脚本 |
+
+## 已确认的关键事实（实测）
+
+| 事实 | 说明 |
+|------|------|
+| 上游默认配置已失效 | 默认弱模型 `anyscale/...` 的 provider 已被 LiteLLM 移除，一请求即 500 |
+| 上游无自动化测试 | `pytest routellm/tests/` 收集 0 items，两个文件是手工冒烟脚本 |
+| `/v1/models` 缺失 | 实测 404，Cursor/Continue 类客户端无法预检模型 |
+| `OpenAI()` 模块级实例化 | `similarity_weighted/utils.py:11`，无 key 时整个包无法 import |
+| BERT 路由器区分度强 | 57 学科 MMLU 上 `corr(weak_acc, win_rate) = -0.7123` |
+| 下游模型名需 provider 前缀 | 裸模型名触发 litellm `BadRequestError`，须写 `openai/<model>` |
+
+详见 `docs/`。
+
 ## 开发与环境纪律
 
 开发在三台机器上进行，职责分离：

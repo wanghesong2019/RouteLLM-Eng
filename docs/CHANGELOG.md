@@ -1,0 +1,121 @@
+# 改造日志
+
+> 本目录记录 RouteLLM-Eng 的改造过程、验证实验、实测数据与决策依据。
+> 目的是让每一步"为什么这么做"都能被追溯 —— 包括失败的尝试和反直觉的发现。
+
+## 目录结构
+
+```
+docs/
+├── CHANGELOG.md          # 改造日志（本文件）：按时间顺序记录每一步
+├── experiments/          # 验证实验：脚本 + 实测输出
+│   ├── README.md         # 实验索引与结论摘要
+│   └── 2026-09-16-*.md   # 单个实验记录（日期前缀）
+└── decisions/            # 技术决策记录（ADR）
+    └── ADR-*.md
+```
+
+## 记录原则
+
+1. **实测优先**：写"实测得到 X"，不写"应该是 X"。没有实测支撑的结论标注为"待验证"。
+2. **记录失败**：走错的弯路同样留痕（例：GSM8K 验证无区分度 → 换 MMLU 后反转），因为它们能防止后人重蹈。
+3. **量化**：尽量给出数字（延迟、相关系数、样本量），而非定性描述。
+4. **可复现**：实验脚本入库，附运行命令与环境。
+
+---
+
+## 2026-09-16
+
+### 1. 仓库拆分与基线建立
+
+从求职仓库 `jobfinding` 中拆出本仓库，作为独立工程仓库。
+
+- 上游基线：`lmsys/routellm @ 0b64fdafe049e596a3f5657c219329f24af24198`（2024-08-11 快照）
+- 导入方式：与上游 zip 做 `diff -rq` 全量比对，确认无改动后入库
+- 规模：22 个 Python 文件 / 3006 行代码 / 108 个跟踪文件 / 17MB
+- 方案文档保留在 jobfinding（`projects/RouteLLM-优化改造方案.md`），本仓库承载实现
+
+### 2. 环境与依赖验证（33 号机）
+
+环境：Python 3.10.12 + venv，`pip install -e ".[serve]"`
+
+实测安装版本：
+
+| 包 | 版本 | 备注 |
+|---|---|---|
+| torch | 2.14.0 | 核心依赖（非 optional） |
+| transformers | 5.17.0 | 上游代码为 2024-08，跨 3 个大版本 |
+| datasets | 5.0.1 | `load_dataset` 行为有变动风险 |
+| litellm | 1.101.0 | |
+| numpy | 1.26.4 | 符合 pyproject 的 `numpy<2` 约束 |
+
+**结论**：`import` 全部通过，`transformers 5.x` 未破坏导入（详见实验 1）。
+
+### 3. 端到端冒烟（改造前基线）
+
+```
+GET  /health               → 200 {"status":"online"}     ✓
+GET  /v1/models            → 404                          ✗ 端点缺失
+POST /v1/chat/completions  → 500                          ✗ 见下
+```
+
+**500 根因**：上游默认弱模型 `anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1` 已失效 —— LiteLLM 移除了 `anyscale` provider。故障链：默认模型名失效 → `get_llm_provider` 抛 `BadRequestError` → `controller.py:153` 裸调用无 try/except → 冒泡为 500。
+
+换成可用 provider 后：
+
+```
+POST /v1/chat/completions  → 200 SUCCESS
+  routed model : qwen3.5-flash  (random 路由器, threshold 0.5 → 弱模型)
+  response     : "ROUTELLM OK"
+  usage        : 313 tokens
+```
+
+### 4. 测试基建现状
+
+上游**无可运行的自动化测试**：
+
+```bash
+$ pytest routellm/tests/ -v
+collected 0 items
+```
+
+两个 `test_*.py` 的全部逻辑在 `if __name__ == "__main__":` 块内，是手工冒烟脚本，且需真实 API key。`pyproject.toml` 未声明测试依赖。
+
+→ 改造的测试体系需从零建立，已作为 P0 前置项记入方案文档。
+
+### 5. 推理模型下沉至 host（架构决策）
+
+**背景**：上游 `BERTRouter` / `CausalLLMRouter` 在进程内用 transformers 加载模型。若全部塞入容器，镜像会包含 CUDA torch + 模型权重。
+
+**决策**：模型推理下沉到 host（43 号机）独立 FastAPI 服务，RouteLLM 容器通过 HTTP 调用。推理服务独立实现，不 import `routellm` 包，保持解耦。
+
+理由与排除的备选方案见 `decisions/ADR-001-inference-service-on-host.md`。
+
+### 6. BERT 路由模型验证（43 号机）
+
+模型：`routellm/bert_gpt4_augmented`（1.1GB，实际架构为 **xlm-roberta**，非 BERT）
+
+| 项 | 实测值 |
+|---|---|
+| 加载耗时 | 1.2s |
+| 单条推理延迟 | 6.1ms（平均，RTX 4090，预热后） |
+| 确定性 | 同输入两次结果完全一致 ✓ |
+| 标签数 | 3 |
+
+**区分度验证**（详见实验 2、3）：
+
+- GSM8K（1319 题，同质数学题）→ corr ≈ 0，**无区分度**
+- MMLU（57 学科）→ corr(weak_acc, win_rate) = **-0.7123**，**区分度强**
+
+→ 结论：模型加载正确，路由器有效性依赖"query 文本能反映难度"这一前提。同质化数据集不适用。**MMLU 应作为主要验证集，GSM8K 不适用。**
+
+### 7. 发现的问题清单（已同步至方案文档）
+
+| # | 问题 | 位置 | 严重度 |
+|---|---|---|---|
+| 1 | 上游默认模型失效，开箱即 500 | `openai_server.py` argparse 默认值 | 高 |
+| 2 | `OpenAI()` 模块级实例化，无 key 时整个包无法 import | `similarity_weighted/utils.py:11` | 高 |
+| 3 | `/v1/models` 端点缺失（404） | `openai_server.py` | 中 |
+| 4 | 无任何自动化测试 | `routellm/tests/` | 高 |
+| 5 | Pydantic V1 风格 `@validator`（6 处），V3 将移除 | `causal_llm/prompt_format.py` | 低 |
+| 6 | 下游模型名需 provider 前缀，否则 litellm 报错 | 配置层 | 中 |
