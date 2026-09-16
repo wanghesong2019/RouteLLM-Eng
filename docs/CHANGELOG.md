@@ -191,3 +191,54 @@ tests/
 运行：`pytest tests/ -v` → **19 passed**
 
 这是本仓库第一个可运行的自动化测试体系（上游 `routellm/tests/` 是手工脚本，收集 0 items）。
+
+### 11. Docker 化部署（问题5 改造）
+
+**新增容器化文件**：`Dockerfile`、`docker-compose.yml`、`requirements-gateway.txt`、`.dockerignore`、`.env.example`
+
+**镜像**：675MB（33 号机构建 → `docker save` → 传输 → 43 `docker load`）
+
+关键：容器内**不含 torch/transformers/datasets**（惰性导入生效），镜像从 3GB+ 降到 675MB，构建从近 1 小时降到约 8 分钟。
+
+**配置外置化**（新增 `routellm/config.py`）：
+- 全部配置来自环境变量，不再硬编码默认模型名
+- 启动时 `validate()`，**fail fast** —— 修复"默认模型失效导致运行时 500"
+- 校验下游模型名必须带 provider 前缀
+
+**同时修复的两个上游缺陷**：
+
+| # | 问题 | 位置 |
+|---|---|---|
+| 2 | `OpenAI()` 模块级实例化，无 key 时整个包无法 import | `similarity_weighted/utils.py:11` |
+| 7 | 模块级 `argparse.parse_args()`，import 时吃掉外部 argv | `openai_server.py` |
+
+**新增 `/v1/models` 端点**（问题3，上游实测 404）
+
+**部署验证（43 号机全链路）**：
+
+```
+网关 → 容器 → host.docker.internal:6070 推理服务 → 路由决策 → 下游 LLM
+```
+
+| 项 | 结果 |
+|---|---|
+| 容器状态 | `Up (healthy)`，启动 7 秒 |
+| `GET /health` | `{"status":"online"}` |
+| `GET /v1/models` | `router-remote_bert-0.5` |
+| 容器 → host 推理服务 | HTTP 200（`host.docker.internal` → 172.18.0.1） |
+| 全链路 5 个 prompt | 全部成功路由到下游并返回 |
+
+**新发现**：43 上 `taisure.com` 被 DNS 解析到本机公网 IP（115.233.223.42），
+而本机无 443 监听 → 不可达。下游 LLM 改用硅基流动（43 可达）。
+详见 `docs/experiments/2026-09-16-docker-deployment-e2e.md`。
+
+### 12. 构建过程踩坑记录（43 网络环境）
+
+| # | 现象 | 根因 | 处置 |
+|---|---|---|---|
+| 1 | `apt-get install` 卡 6 分钟+ | Debian 官方源不可达 | 换阿里云镜像源 → **43 秒** |
+| 2 | pip 无限等待无输出 | 容器内 DNS 只返回 IPv6，本机无 IPv6 出口 | `sitecustomize.py` 强制 IPv4 |
+| 3 | 无谓体积 | 误装 gcc/g++（依赖均为预编译 wheel） | 移除 |
+| 4 | torch 554MB | 清华源解析到 CUDA 版 | 惰性导入 + 网关不装 torch |
+| 5 | 构建上下文过大 | `.venv` 6.1GB 被打包 | `.dockerignore` 排除 |
+| 6 | 43 构建极慢 | 网络差异（33 显著更快） | 改在 33 构建后传输镜像 |

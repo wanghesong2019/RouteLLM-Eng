@@ -8,6 +8,7 @@
 | 2026-09-16 | [BERT 路由模型加载与区分度验证](2026-09-16-bert-router-validation.md) | ✅ 通过 | 加载正常，6.1ms/条；MMLU 上 corr(weak_acc, win_rate) = **-0.7123**（区分度强）；GSM8K 同质数据无区分度 |
 | 2026-09-16 | [推理服务 API 端到端验证](2026-09-16-inference-api-validation.md) | ✅ 通过 | 与上游逐位一致（`matches: true`）；HTTP 开销 4.6ms；batch=128 加速 **68x**，MMLU 14000 题 1.3s |
 | 2026-09-16 | [RouteLLM 与推理服务链路打通](2026-09-16-remote-router-e2e.md) | ✅ 通过 | 新增 `RemoteBERTRouter`（19 个单测全绿）；跨机器 win_rate 逐位一致；**发现 43 仅开放 SSH，Docker 化须两者同在 43** |
+| 2026-09-16 | [Docker 化部署与全链路验证](2026-09-16-docker-deployment-e2e.md) | ✅ 通过 | 镜像 675MB（无 torch）；容器经 `host.docker.internal` 调用 host 推理服务；网关→路由→下游 LLM 全链路打通 |
 
 ## 结论摘要（供快速引用）
 
