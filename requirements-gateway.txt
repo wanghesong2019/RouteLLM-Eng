@@ -1,0 +1,27 @@
+# RouteLLM 网关最小依赖集
+#
+# 用于 Docker 镜像：只包含"路由决策 + 网关"所需的依赖。
+#
+# **刻意不包含 torch / transformers / datasets**：
+#   模型推理已下沉到 host 侧推理服务（见 docs/decisions/ADR-001），
+#   使用 remote_bert / random 路由器时容器内无需任何模型推理能力。
+#   routers.py 已改为惰性导入重依赖，不含这些包也能正常启动。
+#
+# 效果：镜像从 3GB+ 降到约 300MB，构建时间从近 1 小时降到几分钟。
+#
+# 版本约束与 pyproject.toml 保持一致（numpy<2）。
+
+litellm
+openai
+pydantic
+pyyaml
+numpy<2
+pandas
+scikit-learn
+tqdm
+huggingface-hub
+shortuuid
+
+# FastAPI 服务
+fastapi
+uvicorn

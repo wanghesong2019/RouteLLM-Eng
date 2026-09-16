@@ -1,0 +1,64 @@
+# RouteLLM 网关部署编排
+#
+# 部署位置：43 号机（见 docs/experiments/2026-09-16-remote-router-e2e.md）
+#   原因：43 防火墙仅开放 SSH，33 无法直连 43:6070；
+#         推理服务与网关同机部署，容器经 host.docker.internal 访问 host 推理服务。
+#
+# 启动：
+#   docker compose up -d
+#   docker compose logs -f routellm
+#
+# 前置：host 上推理服务须先运行（services/inference_server.py，端口 6070）
+
+services:
+  routellm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: routellm-eng:dev
+    container_name: routellm-eng
+    restart: unless-stopped
+
+    ports:
+      # 仅绑定回环，避免暴露到公网。如需外部访问，显式改为 "6060:6060"
+      - "127.0.0.1:6060:6060"
+
+    environment:
+      # ---- 下游 LLM provider（OpenAI 兼容）----
+      # 模型名必须带 provider 前缀（如 openai/qwen3.7-max），
+      # 裸模型名会触发 litellm BadRequestError（见 docs/CHANGELOG.md 问题6）
+      ROUTELLM_STRONG_MODEL: "${ROUTELLM_STRONG_MODEL:?需要设置强模型}"
+      ROUTELLM_WEAK_MODEL: "${ROUTELLM_WEAK_MODEL:?需要设置弱模型}"
+      ROUTELLM_API_BASE: "${ROUTELLM_API_BASE:?需要设置下游 api_base}"
+      ROUTELLM_API_KEY: "${ROUTELLM_API_KEY:?需要设置下游 api_key}"
+
+      # ---- 路由模型推理服务（host 侧）----
+      ROUTELLM_INFERENCE_URL: "${ROUTELLM_INFERENCE_URL:-http://host.docker.internal:6070}"
+
+      # ---- 启用的路由器 ----
+      ROUTELLM_ROUTERS: "${ROUTELLM_ROUTERS:-remote_bert}"
+
+    extra_hosts:
+      # Linux 上 host.docker.internal 不会自动解析，需显式映射
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6060/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - routellm-net
+
+networks:
+  routellm-net:
+    driver: bridge
+    name: routellm-net

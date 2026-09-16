@@ -1,0 +1,47 @@
+# 构建上下文排除项
+#
+# 重要：.venv 有 6GB+，若不排除会被打进构建上下文，导致构建极慢。
+# 同理排除 .git、评测数据、缓存等。
+
+# 虚拟环境（最大）
+.venv/
+venv/
+env/
+
+# 版本控制
+.git/
+.gitignore
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 本地配置与密钥
+.env
+.env.*
+*.key
+secrets/
+
+# 运行产物
+results/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+data/
+
+# 文档与脚本（运行时不需要，减小上下文）
+docs/
+scripts/
+tests/
+
+# 评测数据（14MB，运行时不需要；如需容器内跑评测再放开）
+routellm/evals/
+
+# 开发工具配置
+.pre-commit-config.yaml
+.github/

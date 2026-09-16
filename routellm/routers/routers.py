@@ -1,26 +1,51 @@
 import abc
 import functools
 import random
+from typing import Any
 
 import numpy as np
-import torch
-from datasets import concatenate_datasets, load_dataset
-from huggingface_hub import hf_hub_download
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from routellm.routers.causal_llm.configs import RouterModelConfig
-from routellm.routers.causal_llm.llm_utils import (
-    load_prompt_format,
-    to_openai_api_messages,
-)
-from routellm.routers.causal_llm.model import CausalLLMClassifier
-from routellm.routers.matrix_factorization.model import MODEL_IDS, MFModel
+# NOTE: torch / transformers / datasets / huggingface_hub 改为惰性导入。
+#
+# 原因：这些依赖体积巨大（torch wheel 554MB），但只有进程内推理的路由器
+# （bert / causal_llm / sw_ranking / mf）需要它们。使用 remote_bert（HTTP 调用
+# host 推理服务）或 random 时完全不需要。
+#
+# 模块级导入会强迫容器镜像包含全部重依赖 —— 见 docs/CHANGELOG.md。
+# 惰性化后容器镜像从 3GB+ 降到 ~500MB，且支持"只部署网关"的部署形态。
+
+
+def _lazy_import_torch():
+    import torch
+
+    return torch
+
+
+def _lazy_import_transformers():
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    return AutoModelForSequenceClassification, AutoTokenizer
+
+
+def _lazy_import_datasets():
+    from datasets import concatenate_datasets, load_dataset
+
+    return concatenate_datasets, load_dataset
+
+
+def _lazy_import_hf_hub_download():
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download
+
+
 from routellm.routers.similarity_weighted.utils import (
     OPENAI_CLIENT,
     compute_elo_mle_with_tie,
     compute_tiers,
     preprocess_battles,
 )
+
 
 
 def no_parallel(cls):
@@ -60,6 +85,16 @@ class CausalLLMRouter(Router):
         model_id="meta-llama/Meta-Llama-3-8B",
         flash_attention_2=False,
     ):
+        # 惰性导入：仅在使用本路由器时才需要重依赖
+        from routellm.routers.causal_llm.configs import RouterModelConfig
+        from routellm.routers.causal_llm.llm_utils import (
+            load_prompt_format,
+            to_openai_api_messages,
+        )
+        from routellm.routers.causal_llm.model import CausalLLMClassifier
+
+        hf_hub_download = _lazy_import_hf_hub_download()
+
         model_config = RouterModelConfig(
             model_id=model_id,
             model_type=model_type,
@@ -109,12 +144,17 @@ class BERTRouter(Router):
         checkpoint_path,
         num_labels=3,
     ):
+        # 惰性导入：仅在使用本路由器时才需要重依赖
+        AutoModelForSequenceClassification, AutoTokenizer = _lazy_import_transformers()
+
         self.model = AutoModelForSequenceClassification.from_pretrained(
             checkpoint_path, num_labels=num_labels
         )
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
 
     def calculate_strong_win_rate(self, prompt):
+        torch = _lazy_import_torch()
+
         inputs = self.tokenizer(
             prompt, return_tensors="pt", padding=True, truncation=True
         )
@@ -143,6 +183,9 @@ class SWRankingRouter(Router):
     ):
         self.strong_model = strong_model
         self.weak_model = weak_model
+
+        # 惰性导入：仅在使用本路由器时才需要重依赖
+        concatenate_datasets, load_dataset = _lazy_import_datasets()
 
         self.arena_df = concatenate_datasets(
             [load_dataset(dataset, split="train") for dataset in arena_battle_datasets]
@@ -221,6 +264,11 @@ class MatrixFactorizationRouter(Router):
         num_classes=1,
         use_proj=True,
     ):
+        # 惰性导入：仅在使用本路由器时才需要重依赖
+        from routellm.routers.matrix_factorization.model import MODEL_IDS, MFModel
+
+        torch = _lazy_import_torch()
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.model = MFModel.from_pretrained(

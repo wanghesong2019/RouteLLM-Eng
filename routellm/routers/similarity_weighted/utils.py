@@ -8,7 +8,35 @@ from openai import OpenAI
 from sklearn.linear_model import LogisticRegression
 
 choices = ["A", "B", "C", "D"]
-OPENAI_CLIENT = OpenAI()
+
+# NOTE: 原实现在模块级调用 OpenAI()，导致没有 OPENAI_API_KEY 时
+# **整个 routellm 包无法 import**（连不需要 OpenAI 的 random 路由器也起不来）。
+# 改为惰性代理：真正用到 sw_ranking / mf 时才创建客户端。
+_OPENAI_CLIENT = None
+
+
+class _LazyOpenAIClient:
+    """惰性 OpenAI 客户端代理。
+
+    保持原调用风格 `OPENAI_CLIENT.embeddings.create(...)` 不变，
+    但直到首次属性访问才实例化 —— 这样无 key 环境下 import 不再失败。
+    """
+
+    def __getattr__(self, name):
+        global _OPENAI_CLIENT
+        if _OPENAI_CLIENT is None:
+            try:
+                _OPENAI_CLIENT = OpenAI()
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(
+                    "需要 OpenAI 客户端（sw_ranking / mf 路由器依赖 Embedding API），"
+                    "但无法初始化：请设置 OPENAI_API_KEY 环境变量。"
+                    f"原始错误: {type(e).__name__}: {e}"
+                ) from e
+        return getattr(_OPENAI_CLIENT, name)
+
+
+OPENAI_CLIENT = _LazyOpenAIClient()
 
 
 def compute_tiers(model_ratings, num_tiers):

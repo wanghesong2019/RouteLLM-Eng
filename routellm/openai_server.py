@@ -19,31 +19,64 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
+from routellm.config import DEFAULT_ROUTERS, ConfigError, Settings
 from routellm.controller import Controller, RoutingError
 from routellm.routers.routers import ROUTER_CLS
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 CONTROLLER = None
+SETTINGS: Optional[Settings] = None
 
-openai_client = AsyncOpenAI()
 count = defaultdict(lambda: defaultdict(int))
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global CONTROLLER
+    global CONTROLLER, SETTINGS
+
+    SETTINGS = Settings.from_env()
+    # 启动时校验，fail fast —— 避免配置错误拖到运行时变成 500
+    try:
+        SETTINGS.validate()
+    except ConfigError as e:
+        logging.error("配置校验失败，服务无法启动: %s", e)
+        raise
+
+    logging.info("配置: %s", SETTINGS.summary())
+    if SETTINGS.inference_url:
+        logging.info("路由模型推理服务: %s", SETTINGS.inference_url)
+
+    router_config = (
+        yaml.safe_load(open(SETTINGS.config_path, "r"))
+        if SETTINGS.config_path
+        else None
+    )
+    # 若配置了远程推理服务，为 remote_* 路由器注入 base_url
+    router_config = _inject_inference_url(router_config, SETTINGS)
 
     CONTROLLER = Controller(
-        routers=args.routers,
-        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-        strong_model=args.strong_model,
-        weak_model=args.weak_model,
-        api_base=args.base_url,
-        api_key=args.api_key,
+        routers=SETTINGS.routers,
+        config=router_config,
+        strong_model=SETTINGS.strong_model,
+        weak_model=SETTINGS.weak_model,
+        api_base=SETTINGS.api_base,
+        api_key=SETTINGS.api_key,
         progress_bar=True,
     )
     yield
     CONTROLLER = None
+
+
+def _inject_inference_url(config, settings):
+    """把 ROUTELLM_INFERENCE_URL 注入到 remote_* 路由器的配置中。"""
+    if not settings.inference_url:
+        return config
+    cfg = dict(config) if config else {}
+    for name in settings.routers:
+        if name.startswith("remote_"):
+            cfg.setdefault(name, {})
+            cfg[name].setdefault("base_url", settings.inference_url)
+    return cfg
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
@@ -146,49 +179,99 @@ async def health_check():
     return JSONResponse(content={"status": "online"})
 
 
-parser = argparse.ArgumentParser(
-    description="An OpenAI-compatible API server for LLM routing."
-)
-parser.add_argument(
-    "--verbose",
-    action="store_true",
-)
-parser.add_argument("--workers", type=int, default=0)
-parser.add_argument("--config", type=str, default=None)
-parser.add_argument("--port", type=int, default=6060)
-parser.add_argument(
-    "--routers",
-    nargs="+",
-    type=str,
-    default=["random"],
-    choices=list(ROUTER_CLS.keys()),
-)
-parser.add_argument(
-    "--base-url",
-    help="The base URL used for all LLM requests",
-    type=str,
-    default=None,
-)
-parser.add_argument(
-    "--api-key",
-    help="The API key used for all LLM requests",
-    type=str,
-    default=None,
-)
-parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
-parser.add_argument(
-    "--weak-model", type=str, default="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1"
-)
-args = parser.parse_args()
+@app.get("/v1/models")
+async def list_models():
+    """列出可用模型。
 
-if args.verbose:
-    logging.basicConfig(level=logging.INFO)
+    上游缺失此端点（实测 404），而 Cursor / Continue 等客户端在连接时会
+    先调 GET /v1/models 预检模型 —— 缺了这个它们连不上。
+    见 docs/CHANGELOG.md 问题清单 #3。
+    """
+    routers = list(CONTROLLER.routers.keys()) if CONTROLLER else list(DEFAULT_ROUTERS)
+    data = []
+    for name in routers:
+        for threshold in DEFAULT_THRESHOLDS:
+            data.append(
+                {
+                    "id": f"router-{name}-{threshold}",
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": "routellm",
+                }
+            )
+    return JSONResponse(content={"object": "list", "data": data})
+
+
+# 预检时列出的阈值（0.5 为常用默认值）
+DEFAULT_THRESHOLDS = [0.5]
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """构造 CLI 解析器。
+
+    注意：不在模块级调用 parse_args() —— 否则任何 `import routellm.openai_server`
+    （测试、库引用、gunicorn 加载）都会解析命令行参数并可能 SystemExit。
+    这是上游的设计缺陷，见 docs/CHANGELOG.md 问题清单 #7。
+    """
+    parser = argparse.ArgumentParser(
+        description="An OpenAI-compatible API server for LLM routing."
+    )
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--host", type=str, default=None)
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument(
+        "--routers",
+        nargs="+",
+        type=str,
+        default=None,
+        choices=list(ROUTER_CLS.keys()),
+    )
+    parser.add_argument("--base-url", type=str, default=None, help="下游 LLM api_base")
+    parser.add_argument("--api-key", type=str, default=None, help="下游 LLM api_key")
+    parser.add_argument("--strong-model", type=str, default=None)
+    parser.add_argument("--weak-model", type=str, default=None)
+    return parser
+
+
+def _apply_cli_to_env(args: argparse.Namespace) -> None:
+    """CLI 参数回填到环境变量，使环境变量成为唯一配置源。
+
+    优先级：环境变量 > 命令行参数 > 默认值
+    （显式设置的环境变量不被 CLI 覆盖，便于 Docker 场景以 env 为准）
+    """
+    mapping = {
+        "strong_model": "STRONG_MODEL",
+        "weak_model": "WEAK_MODEL",
+        "base_url": "API_BASE",
+        "api_key": "API_KEY",
+        "port": "PORT",
+        "host": "HOST",
+        "config": "CONFIG",
+    }
+    for attr, env_name in mapping.items():
+        val = getattr(args, attr, None)
+        if val is not None and not os.environ.get(f"ROUTELLM_{env_name}"):
+            os.environ[f"ROUTELLM_{env_name}"] = str(val)
+
+    if args.routers and not os.environ.get("ROUTELLM_ROUTERS"):
+        os.environ["ROUTELLM_ROUTERS"] = ",".join(args.routers)
+
+    if args.verbose:
+        os.environ["ROUTELLM_VERBOSE"] = "1"
+        logging.basicConfig(level=logging.INFO)
+
 
 if __name__ == "__main__":
-    print("Launching server with routers:", args.routers)
+    _args = _build_parser().parse_args()
+    _apply_cli_to_env(_args)
+
+    _boot = Settings.from_env()
+    print("Launching server with routers:", _boot.routers)
     uvicorn.run(
         "routellm.openai_server:app",
-        port=args.port,
-        host="0.0.0.0",
-        workers=args.workers,
+        port=_boot.port,
+        host=_boot.host,
+        workers=_args.workers,
     )
