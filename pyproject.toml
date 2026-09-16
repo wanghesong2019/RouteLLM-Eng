@@ -35,6 +35,16 @@ dev = ["black", "isort", "pre-commit"]
 [tool.isort]
 profile = "black"
 
+[tool.pytest.ini_options]
+# 只收集 tests/ 下的 pytest 测试。
+#
+# scripts/ 下是「顶层可执行验证脚本」（模块级直接跑真实环境验证并 print），
+# 命名虽为 test_*.py 但并非 pytest 用例；其中 test_e2e_remote_router.py 在
+# 推理服务不可达时会 sys.exit(1)，被 pytest 收集时会导致
+# INTERNALERROR (SystemExit)，使 `pytest scripts/` 完全不可用。
+testpaths = ["tests"]
+norecursedirs = ["scripts", "assets*", "benchmarks*", ".venv", "build", "dist"]
+
 [tool.setuptools.packages.find]
 exclude = ["assets*", "benchmarks*"]
 
