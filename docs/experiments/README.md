@@ -16,6 +16,7 @@
 | 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ✅ 已修复 | **根因：只接了 arena 未接 gpt4_judge_battles 数据集**（官方需拼接两个）；补齐后 mean 0.2148 vs 官方 0.2166（**均值比 0.9914**），逐条相关 **0.8052**（修复前 0.076） |
 | 2026-09-17 | [sw_ranking 阈值标定与路由选型建议](2026-09-17-sw-ranking-threshold-calibration.md) | ✅ 决策 | 阈值须用 quantile 标定（官方方法），50% 占比 → 0.2165；**逐 prompt 对比发现 sw_ranking 是「配额分配」而非「难度判断」**（跨度 0.007 vs bert 0.30）→ **生产默认用 `remote_bert`** |
 | 2026-09-17 | [bert 路由的论文指标评测（APGR）](2026-09-17-bert-apgr-evaluation.md) | ✅ 通过 | **MMLU APGR 0.5267 / GSM8K 0.5333**（对照全弱 0.68/0.64、全强 0.79/0.86）；评测无需真实 LLM API，5700 题评分 7.9s |
+| 2026-09-17 | [多级缓存层（P0）](2026-09-17-multi-tier-cache.md) | ✅ 通过 | 缓存 **win_rate 结果**（而非仅 embedding，因实测 Elo 回归占 90%）；**miss 290~600ms → hit 0.02~0.05ms（快约 4 个数量级）**；支持多级编排、回填、故障降级 |
 
 ## 结论摘要（供快速引用）
 
@@ -105,6 +106,21 @@ sw_ranking 的 win_rate 阈值须用官方 quantile 方法标定
 
 **注意**：sw_ranking 阈值绝不可沿用 bert 的 0.4~0.6 量级 ——
 分布位置完全不同（这曾是本地化初期"永远走强模型"的原因）。
+
+### 多级缓存层（P0，2026-09-17）
+
+```
+缓存对象   : win_rate 结果（非 embedding）—— 因 Elo 回归占路由延迟 90%
+模块       : routellm/cache/ (base / keys / lru_cache / multi_tier)
+实测效果   : miss 290~600ms  →  hit 0.02~0.05ms（约 4 个数量级）
+可观测     : /health 暴露 hit_rate/size；/v1/score 每条带 cached 标记
+```
+
+关键不变量（已测试）：
+- 缓存值与直接计算值**位级一致**（避免引入决策不确定性）
+- 单层故障自动降级（Redis 挂了 L1 仍可用）
+
+未接线：L2 Redis / L3 SQLite（`MultiTierCache` 已支持注入任意后端）。
 
 ### 环境版本（43 号机 rag-dev 环境）
 

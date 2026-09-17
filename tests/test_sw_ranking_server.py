@@ -70,6 +70,71 @@ def test_routes_registered():
         assert p in paths, f"缺少端点 {p}"
 
 
+# --------------------------------------------------------------- 缓存
+
+
+def test_key_algorithm_matches_routellm():
+    """服务内的 key 算法须与 routellm.cache.keys 一致。
+
+    服务为保持独立部署而刻意重复实现 key 生成，故此测试是两者一致性的保障
+    （否则服务与网关的缓存 key 不同源，无法共享缓存）。
+
+    注：本服务可独立部署（不依赖 routellm 包）。当 routellm 包不可用时
+    （仅部署 services/ 的目标机）本测试 skip —— 一致性应在开发仓内校验。
+    """
+    pkg_keys = pytest.importorskip(
+        "routellm.cache.keys", reason="routellm 包不可用（独立部署场景）"
+    )
+    from services.sw_ranking_server import _result_key as svc_result_key
+
+    for prompt in ["hello", "What is 1+1?", "x" * 500]:
+        assert svc_result_key(prompt) == pkg_keys.result_key(prompt), (
+            f"key 不一致: {svc_result_key(prompt)} != {pkg_keys.result_key(prompt)}"
+        )
+
+
+def test_lru_cache_basic():
+    """服务内 _LRUCache 的基本行为。"""
+    from services.sw_ranking_server import _LRUCache
+
+    c = _LRUCache(maxsize=2, default_ttl=60)
+    assert c.get("k") is None
+    c.set("k", b"v")
+    assert c.get("k") == b"v"
+
+    # 超容量淘汰最久未使用
+    c.set("k2", b"v2")
+    c.get("k")  # 使 k 变为最近使用
+    c.set("k3", b"v3")
+    assert c.get("k2") is None, "k2 应被淘汰"
+    assert c.get("k") == b"v"
+
+
+def test_lru_cache_ttl_expiry():
+    """TTL 过期后应 miss。"""
+    import time as _t
+
+    from services.sw_ranking_server import _LRUCache
+
+    c = _LRUCache(maxsize=10, default_ttl=0.15)
+    c.set("k", b"v")
+    assert c.get("k") == b"v"
+    _t.sleep(0.2)
+    assert c.get("k") is None
+
+
+def test_lru_cache_stats():
+    """统计应记录命中/未命中。"""
+    from services.sw_ranking_server import _LRUCache
+
+    c = _LRUCache(maxsize=10)
+    c.set("k", b"v")
+    c.get("k")
+    c.get("miss")
+    s = c.stats()
+    assert s["hits"] == 1 and s["misses"] == 1 and s["size"] == 1
+
+
 # --------------------------------------------------------------- 推理正确性
 
 
