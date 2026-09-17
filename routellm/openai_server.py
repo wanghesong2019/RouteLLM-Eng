@@ -68,14 +68,28 @@ async def lifespan(app):
 
 
 def _inject_inference_url(config, settings):
-    """把 ROUTELLM_INFERENCE_URL 注入到 remote_* 路由器的配置中。"""
+    """把推理服务 URL 注入到 remote_* 路由器的配置中。
+
+    默认注入 ROUTELLM_INFERENCE_URL（remote_bert 用，端口 6070）。
+    remote_sw_ranking 指向独立的 sw_ranking 服务（端口 6071），
+    可用 ROUTELLM_SW_RANKING_INFERENCE_URL 单独覆盖；未设置时回落默认。
+
+    注：setdefault 保证配置文件里已显式指定的 base_url 不被覆盖。
+    """
     if not settings.inference_url:
         return config
     cfg = dict(config) if config else {}
+
+    # 路由名 → 专用 URL 环境变量（None 表示用默认）
+    override = {
+        "remote_sw_ranking": getattr(settings, "sw_ranking_inference_url", None),
+    }
+
     for name in settings.routers:
         if name.startswith("remote_"):
             cfg.setdefault(name, {})
-            cfg[name].setdefault("base_url", settings.inference_url)
+            url = override.get(name) or settings.inference_url
+            cfg[name].setdefault("base_url", url)
     return cfg
 
 

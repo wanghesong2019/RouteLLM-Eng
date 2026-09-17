@@ -165,3 +165,56 @@ class RemoteBERTRouter(Router):
             f"timeout={self.timeout}, batch_size={self.batch_size}, "
             f"model_type={self.model_type!r})"
         )
+
+
+class RemoteSWRankingRouter(RemoteBERTRouter):
+    """通过 HTTP 调用 host 侧的 sw_ranking 推理服务。
+
+    服务实现见 ``services/sw_ranking_server.py``（端口 6071）—— 把
+    bge-m3 编码 + 55k 向量相似度 + Elo 回归整条链路下沉到 host，
+    容器保持零挂载、无 torch 的轻量形态（设计见 ADR-001）。
+
+    与 :class:`RemoteBERTRouter` 的唯一差别是默认端口与 model_type：
+    接口形状（``POST /v1/score``，请求 ``{"prompts": [...]}``，
+    响应 ``{"results": [{"win_rate": ...}]}``）完全一致，
+    故直接继承复用全部 HTTP 与分片逻辑。
+
+    win_rate 语义与前两者相同：应路由到强模型的程度，可直接被
+    Controller 替换使用。
+
+    Args:
+        base_url: 服务地址，默认 ``http://host.docker.internal:6071``
+        timeout: 单次 HTTP 请求超时（秒）
+        batch_size: 批量评分的分片大小
+        model_type: 服务侧模型类型，默认 ``sw_ranking``
+
+    用法::
+
+        router = RemoteSWRankingRouter(
+            base_url="http://host.docker.internal:6071"
+        )
+        win_rate = router.calculate_strong_win_rate(prompt)
+    """
+
+    DEFAULT_BASE_URL = "http://host.docker.internal:6071"
+
+    def __init__(
+        self,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = DEFAULT_TIMEOUT,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        model_type: str = "sw_ranking",
+    ):
+        super().__init__(
+            base_url=base_url,
+            timeout=timeout,
+            batch_size=batch_size,
+            model_type=model_type,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"RemoteSWRankingRouter(base_url={self.base_url!r}, "
+            f"timeout={self.timeout}, batch_size={self.batch_size}, "
+            f"model_type={self.model_type!r})"
+        )

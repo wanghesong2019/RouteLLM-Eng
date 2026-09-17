@@ -65,6 +65,10 @@ class Settings:
     host: str = "0.0.0.0"
     config_path: Optional[str] = None
     inference_url: Optional[str] = None
+    # sw_ranking 服务的独立地址（端口 6071）。未设置时回落 inference_url。
+    # 之所以需要独立项：remote_bert(6070) 与 remote_sw_ranking(6071) 是
+    # 两个独立的 host 服务。
+    sw_ranking_inference_url: Optional[str] = None
     verbose: bool = False
 
     # ------------------------------------------------------------------
@@ -102,6 +106,7 @@ class Settings:
             host=get("HOST") or "0.0.0.0",
             config_path=get("CONFIG"),
             inference_url=get("INFERENCE_URL"),
+            sw_ranking_inference_url=get("SW_RANKING_INFERENCE_URL"),
             verbose=bool(get("VERBOSE")),
         )
 
@@ -174,5 +179,6 @@ class Settings:
             "host": self.host,
             "port": self.port,
             "inference_url": self.inference_url,
+            "sw_ranking_inference_url": self.sw_ranking_inference_url,
             "config_path": self.config_path,
         }
