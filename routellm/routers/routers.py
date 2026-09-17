@@ -171,37 +171,77 @@ class BERTRouter(Router):
 
 
 class SWRankingRouter(Router):
+    """相似度加权路由器（Elo 回归）。
+
+    数据来源支持两种模式，互斥：
+      - 远端（原行为）：arena_battle_datasets + arena_embedding_datasets，
+        经 datasets.load_dataset 从 HF hub 拉取。
+      - 本地（改造后）：local_battles_csv + local_embeddings_npy，
+        直接从磁盘读取，无 HF 网络依赖，离线可用。
+
+    prompt 编码同样支持两种模式：
+      - 远端（原行为）：调 OpenAI text-embedding-3-small（每次请求 ~50ms + 计费）。
+      - 本地（改造后）：local_embedder_path 指向本地 bge-m3 权重，
+        进程内推理，零 API 成本、无网络依赖。
+    """
+
     def __init__(
         self,
-        arena_battle_datasets,
-        arena_embedding_datasets,
+        arena_battle_datasets=None,
+        arena_embedding_datasets=None,
         # This is the model pair for Elo calculations at inference time,
         # and can be different from the model pair used for routing.
         strong_model="gpt-4-1106-preview",
         weak_model="mixtral-8x7b-instruct-v0.1",
         num_tiers=10,
+        # ---- 本地化改造新增（均可选，默认 None 时保持原远端行为）----
+        local_battles_csv=None,
+        local_embeddings_npy=None,
+        local_embedder_path=None,
     ):
         self.strong_model = strong_model
         self.weak_model = weak_model
 
-        # 惰性导入：仅在使用本路由器时才需要重依赖
-        concatenate_datasets, load_dataset = _lazy_import_datasets()
+        use_local_data = local_battles_csv is not None or local_embeddings_npy is not None
+        if use_local_data:
+            if local_battles_csv is None or local_embeddings_npy is None:
+                raise ValueError(
+                    "本地数据模式需同时提供 local_battles_csv 与 local_embeddings_npy；"
+                    f"当前收到 battles={local_battles_csv!r}, embeddings={local_embeddings_npy!r}"
+                )
+            self.arena_df, self.arena_conv_embedding = self._load_local_data(
+                local_battles_csv, local_embeddings_npy
+            )
+        else:
+            self.arena_df, self.arena_conv_embedding = self._load_remote_data(
+                arena_battle_datasets, arena_embedding_datasets
+            )
 
-        self.arena_df = concatenate_datasets(
-            [load_dataset(dataset, split="train") for dataset in arena_battle_datasets]
-        ).to_pandas()
-        self.arena_df = preprocess_battles(self.arena_df)
-
-        embeddings = [
-            np.array(load_dataset(dataset, split="train").to_dict()["embeddings"])
-            for dataset in arena_embedding_datasets
-        ]
-        self.arena_conv_embedding = np.concatenate(embeddings)
-        self.embedding_model = "text-embedding-3-small"
+        # prompt 编码器：本地 bge-m3 优先，否则回落 OpenAI Embedding API。
+        # 注意 embedding_model 需分别表达两件事：
+        #   - 库内 arena 向量由什么模型生成（本地数据模式下固定 bge-m3）
+        #   - 推理时 prompt 用什么编码（取决于是否给了 local_embedder_path）
+        self._local_embedder = None
+        self._pending_embedder_path = local_embedder_path
+        if local_embedder_path is not None:
+            # 编码与库向量都用本地 bge-m3
+            self.embedding_model = "bge-m3"
+            self.encoder_backend = "local:bge-m3"
+        elif use_local_data:
+            # 库向量是本地 bge-m3 生成的，但 prompt 编码仍走 OpenAI（维度不匹配会报错，
+            # 属预期：本地库向量必须配本地编码器）
+            self.embedding_model = "bge-m3"
+            self.encoder_backend = "openai:text-embedding-3-small"
+        else:
+            self.embedding_model = "text-embedding-3-small"
+            self.encoder_backend = "openai:text-embedding-3-small"
 
         assert len(self.arena_df) == len(
             self.arena_conv_embedding
-        ), "Number of battle embeddings is mismatched to data"
+        ), (
+            f"Number of battle embeddings is mismatched to data: "
+            f"battles={len(self.arena_df)}, embeddings={len(self.arena_conv_embedding)}"
+        )
 
         model_ratings = compute_elo_mle_with_tie(self.arena_df)
         self.model2tier = compute_tiers(model_ratings, num_tiers=num_tiers)
@@ -213,15 +253,72 @@ class SWRankingRouter(Router):
             lambda x: self.model2tier[x]
         )
 
-    def get_weightings(self, similarities):
-        max_sim = np.max(similarities)
-        return 10 * 10 ** (similarities / max_sim)
+    # ------------------------------------------------------------ 数据加载
 
-    def calculate_strong_win_rate(
-        self,
-        prompt,
-    ):
-        prompt_emb = (
+    @staticmethod
+    def _load_local_data(battles_csv, embeddings_npy):
+        """从本地磁盘加载 battles 与向量，绕开 HF hub。
+
+        Returns:
+            (arena_df, embeddings)：arena_df 为 preprocess 后的 DataFrame，
+            embeddings 为 (N, D) 的 float32 矩阵。
+        """
+        import os
+
+        import pandas as pd
+
+        for p in (battles_csv, embeddings_npy):
+            if not os.path.exists(p):
+                raise FileNotFoundError(f"本地数据文件不存在: {p}")
+
+        battles_df = pd.read_csv(battles_csv)
+        arena_df = preprocess_battles(battles_df.copy())
+
+        embeddings = np.load(embeddings_npy)
+        if embeddings.dtype != np.float32:
+            embeddings = embeddings.astype(np.float32)
+
+        if len(arena_df) != len(embeddings):
+            raise AssertionError(
+                f"向量条数 {len(embeddings)} 与 battle 行数 {len(arena_df)} 不一致，"
+                "两者必须来自同一批数据（同一 preprocess 结果）"
+            )
+        return arena_df, embeddings
+
+    @staticmethod
+    def _load_remote_data(arena_battle_datasets, arena_embedding_datasets):
+        """原行为：从 HF hub 拉取 battle 与 embedding 数据集。"""
+        concatenate_datasets, load_dataset = _lazy_import_datasets()
+
+        arena_df = concatenate_datasets(
+            [load_dataset(dataset, split="train") for dataset in arena_battle_datasets]
+        ).to_pandas()
+        arena_df = preprocess_battles(arena_df)
+
+        embeddings = [
+            np.array(load_dataset(dataset, split="train").to_dict()["embeddings"])
+            for dataset in arena_embedding_datasets
+        ]
+        arena_conv_embedding = np.concatenate(embeddings)
+        return arena_df, arena_conv_embedding
+
+    # ------------------------------------------------------------ 编码
+
+    def _encode_prompt(self, prompt):
+        """把 prompt 编码为向量。本地 bge-m3 优先，否则走 OpenAI Embedding API。"""
+        if self._pending_embedder_path is not None:
+            if self._local_embedder is None:
+                from routellm.routers.similarity_weighted.local_embedder import (
+                    LocalBGEM3Embedder,
+                )
+
+                self._local_embedder = LocalBGEM3Embedder(
+                    model_path=self._pending_embedder_path
+                )
+            vecs = self._local_embedder.encode_prompts([prompt])
+            return vecs[0]
+
+        return (
             (
                 OPENAI_CLIENT.embeddings.create(
                     input=[prompt], model=self.embedding_model
@@ -230,10 +327,28 @@ class SWRankingRouter(Router):
             .data[0]
             .embedding
         )
-        similarities = np.dot(self.arena_conv_embedding, prompt_emb) / (
-            np.linalg.norm(self.arena_conv_embedding, axis=1)
-            * np.linalg.norm(prompt_emb)
-        )
+
+    # ------------------------------------------------------------ 推理
+
+    def get_weightings(self, similarities):
+        max_sim = np.max(similarities)
+        return 10 * 10 ** (similarities / max_sim)
+
+    def calculate_strong_win_rate(
+        self,
+        prompt,
+    ):
+        prompt_emb = self._encode_prompt(prompt)
+
+        # 向量若已 L2 归一化（本地 bge-m3 路径），分母可省一次全量 norm 计算
+        arena_norms = np.linalg.norm(self.arena_conv_embedding, axis=1)
+        prompt_norm = np.linalg.norm(prompt_emb)
+        if np.allclose(arena_norms, 1.0, atol=1e-3) and np.isclose(prompt_norm, 1.0, atol=1e-3):
+            similarities = np.dot(self.arena_conv_embedding, prompt_emb)
+        else:
+            similarities = np.dot(self.arena_conv_embedding, prompt_emb) / (
+                arena_norms * prompt_norm
+            )
 
         weightings = self.get_weightings(similarities)
         res = compute_elo_mle_with_tie(self.arena_df, sample_weight=weightings)
