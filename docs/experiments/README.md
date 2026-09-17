@@ -12,6 +12,7 @@
 | 2026-09-16 | [环境探查：33/43/A6000 三机对比](2026-09-16-environment-survey.md) | 决策 | 维持 43 方案（唯一 GPU 空闲的机器）；**A6000 即 GitLab 主机**（172.17.17.50）；33 与 A6000 的 GPU 均被 vLLM 占满 |
 | 2026-09-17 | [sw_ranking 本地化与 Elo 求解器性能优化](2026-09-17-sw-ranking-localization.md) | ✅ 通过 | 本地 bge-m3 替代 OpenAI Embedding（55361 条 / 112s / $0）；**路由延迟 90% 在 `LogisticRegression.fit`**，换 newton-cholesky 后端到端 **394ms → 185ms（2.1×）**，模型排序完全一致 |
 | 2026-09-17 | [镜像重建与容器切换](2026-09-17-image-rebuild-container-switch.md) | ✅ 通过 | 新代码上线无回归（镜像 675→704MB，仍未装 torch）；**关键发现：真实网关中路由开销占比 <5%，下游 LLM 生成占 1.7~16s** |
+| 2026-09-17 | [sw_ranking 服务化上线](2026-09-17-sw-ranking-service-deployment.md) | ⚠️ 部分 | 链路打通：6071 host 服务 + 容器启用 `remote_sw_ranking`（零挂载保持轻量）；**但发现 win_rate 全挤在 0.689~0.693，0.5 阈值下永远走强模型**（bert 对比有正常区分度 0.297~0.453）→ 待查 |
 
 ## 结论摘要（供快速引用）
 
@@ -40,6 +41,20 @@ compute_elo_mle_with_tie        355.5ms   90.1%   ← 瓶颈
 - 传 `solver="lbfgs"` 可复现旧结果
 
 > 求解器性能对 `sample_weight` 的**逐元素排列**敏感。合成权重（uniform / beta）下 newton-cholesky 反而更慢，性能测试必须走真实路由链路取 `get_weightings(cosine_sims)`。
+
+### ⚠️ 已知问题：sw_ranking 区分度不足（2026-09-17）
+
+| prompt | sw_ranking | bert |
+|---|---|---|
+| hi | 0.6892 | 0.4007 |
+| What is 1+1? | 0.6931 | 0.2970 |
+| 证明√2无理数 | 0.6920 | 0.4533 |
+
+- sw_ranking 的 win_rate 全部挤在 **0.689~0.693**（极差 0.0039），**高于 0.5 阈值**
+- 后果：threshold=0.5 下**所有请求都走强模型**，失去省钱意义
+- bert 对比有正常区分度与正确方向
+- **生产路由应继续用 `remote_bert`**，`remote_sw_ranking` 待查清后再启用
+- 待查方向：向量维度差异（bge-m3 1024 vs 官方 1536）/ `get_weightings` 按最大值归一化的副作用 / threshold 标定 / 缺少 `gpt4_judge_battles` 数据
 
 ### 环境版本（43 号机 rag-dev 环境）
 
