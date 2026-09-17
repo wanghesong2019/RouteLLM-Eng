@@ -4,6 +4,7 @@ It current only supports Chat Completions: https://platform.openai.com/docs/api-
 """
 
 import argparse
+import contextvars
 import logging
 import os
 import time
@@ -93,7 +94,44 @@ def _inject_inference_url(config, settings):
     return cfg
 
 
+# 指标采集上下文。用 ContextVar 而非全局 dict —— 网关处理并发请求时，
+# 全局 dict 会被多个请求互相覆盖，导致指标串台。ContextVar 天然按协程隔离。
+_METRICS_CTX: contextvars.ContextVar = contextvars.ContextVar("routellm_metrics", default=None)
+
+
 app = fastapi.FastAPI(lifespan=lifespan)
+
+# ---------------------------------------------------------------------------
+# 监控（方案文档 4.2，P0）
+#
+# 挂载自研 Dashboard + Prometheus 端点，并用中间件采集请求级指标。
+# 指标落 SQLite（解决原实现 model_counts「重启丢失」的问题）。
+#
+# 采集失败不应影响路由服务：所有监控相关调用都包在 try/except 中。
+# ---------------------------------------------------------------------------
+_METRICS_ENABLED = os.environ.get("ROUTELLM_METRICS_ENABLED", "1") not in ("0", "false", "False")
+
+if _METRICS_ENABLED:
+    try:
+        from routellm.monitoring.dashboard import router as _dashboard_router
+        from routellm.monitoring.dashboard import set_store as _set_metrics_store
+        from routellm.monitoring.middleware import MetricsMiddleware as _MetricsMiddleware
+        from routellm.monitoring.store import MetricsStore as _MetricsStore
+
+        _METRICS_STORE = _MetricsStore(
+            os.environ.get("ROUTELLM_METRICS_DB", "/tmp/routellm_metrics.db")
+        )
+        _set_metrics_store(_METRICS_STORE)
+
+        app.include_router(_dashboard_router)
+        # 中间件需在 app 创建后添加；ctx_var 用本模块的 _METRICS_CTX
+        app.add_middleware(_MetricsMiddleware, store=_METRICS_STORE, ctx_var=_METRICS_CTX)
+        logging.info(
+            "监控已启用: DB=%s, Dashboard=/dashboard, Prometheus=/metrics",
+            os.environ.get("ROUTELLM_METRICS_DB", "/tmp/routellm_metrics.db"),
+        )
+    except Exception as _e:  # noqa: BLE001
+        logging.warning("监控初始化失败（服务继续运行）: %s", _e)
 
 
 class ErrorResponse(BaseModel):
@@ -167,6 +205,10 @@ async def create_chat_completion(request: ChatCompletionRequest):
     # Model name uses format router-[router name]-[threshold] e.g. router-bert-0.7
     # The router type and threshold is used for routing that specific request.
     logging.info(f"Received request: {request}")
+
+    # 采集指标所需的信息写入 request.state（由 MetricsMiddleware 读取）
+    _capture_request_meta(request)
+
     try:
         res = await CONTROLLER.acompletion(
             **request.model_dump(exclude_none=True),
@@ -177,7 +219,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             status_code=400,
         )
 
-    logging.info(CONTROLLER.model_counts)
+    _capture_response_meta(request, res)
 
     if request.stream:
         return StreamingResponse(
@@ -187,10 +229,101 @@ async def create_chat_completion(request: ChatCompletionRequest):
         return JSONResponse(content=res.model_dump())
 
 
+def _capture_request_meta(request: ChatCompletionRequest) -> None:
+    """从请求解析路由名/阈值，并算 prompt hash（隐私：只存 hash）。
+
+    模型名格式：router-<router_name>-<threshold>，如 router-remote_bert-0.5。
+    """
+    try:
+        from routellm.monitoring.metrics import hash_prompt
+
+        parts = str(request.model).split("-")
+        threshold = 0.0
+        router_name = ""
+        if len(parts) >= 3:
+            threshold = float(parts[-1])
+            router_name = "-".join(parts[1:-1])
+
+        msgs = request.messages
+        text = ""
+        if isinstance(msgs, str):
+            text = msgs
+        elif isinstance(msgs, list) and msgs:
+            last = msgs[-1]
+            if isinstance(last, dict):
+                text = str(last.get("content", ""))
+
+        ctx = dict(_METRICS_CTX.get() or {})
+        ctx.update(
+            router_name=router_name,
+            threshold=threshold,
+            prompt_hash=hash_prompt(text),
+        )
+        _METRICS_CTX.set(ctx)
+    except Exception:  # noqa: BLE001
+        pass  # 指标采集失败不应影响请求
+
+
+def _capture_response_meta(request: ChatCompletionRequest, res) -> None:
+    """提取 token 数、实际路由档位，以及路由元信息（win_rate / 延迟）。"""
+    try:
+        from routellm.controller import get_routing_info
+        from routellm.monitoring.metrics import estimate_cost
+
+        ctx = dict(_METRICS_CTX.get() or {})
+
+        # 路由元信息（由 Controller 在路由决策时记录）
+        ri = get_routing_info()
+        if ri is not None:
+            ctx.update(
+                router_name=ri.router,
+                threshold=ri.threshold,
+                win_rate=ri.win_rate,
+                routed_model=ri.routed_model,
+                routing_latency_ms=ri.latency_ms,
+            )
+        else:
+            # 兜底：从响应 model 推断档位
+            routed = getattr(res, "model", "") or ""
+            strong_model = getattr(SETTINGS, "strong_model", "") or ""
+            tier = (
+                "strong"
+                if strong_model and strong_model.split("/")[-1] in routed
+                else "weak"
+            )
+            ctx["routed_model"] = tier
+
+        usage = getattr(res, "usage", None)
+        pt = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        ct = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+
+        ctx.update(
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            estimated_cost=estimate_cost(ctx.get("routed_model", "weak"), pt, ct),
+        )
+        _METRICS_CTX.set(ctx)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return JSONResponse(content={"status": "online"})
+    info: dict = {"status": "online"}
+    try:
+        from routellm.monitoring.dashboard import get_store
+
+        s = await get_store().summary()
+        info["metrics"] = {
+            "total_requests": s["total_requests"],
+            "strong_ratio": s["strong_ratio"],
+            "cost_saved_usd": s["cost_saved_usd"],
+            "cache_hit_rate": s["cache_hit_rate"],
+        }
+    except Exception:  # noqa: BLE001
+        pass
+    return JSONResponse(content=info)
 
 
 @app.get("/v1/models")

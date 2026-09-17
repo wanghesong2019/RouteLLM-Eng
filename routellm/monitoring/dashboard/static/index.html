@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>RouteLLM Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d26; --border: #2a2f3a;
+    --fg: #e6e8ee; --dim: #8b93a7; --accent: #4d9fff;
+    --strong: #ff7a59; --weak: #4dd4a0; --warn: #ffc857;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  h1 span { color: var(--accent); }
+  .meta { color: var(--dim); font-size: 12px; display: flex; gap: 16px; align-items: center; }
+  button {
+    background: var(--card); color: var(--fg); border: 1px solid var(--border);
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  main { padding: 20px 24px 40px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .card .label { color: var(--dim); font-size: 12px; margin-bottom: 6px; }
+  .card .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card .sub { color: var(--dim); font-size: 11px; margin-top: 4px; }
+  .card.hl .value { color: var(--weak); }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .panel h2 { font-size: 13px; margin: 0 0 8px; color: var(--dim); font-weight: 500; }
+  .chart { height: 240px; }
+  .full { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 500; }
+  td { font-variant-numeric: tabular-nums; }
+  .tag { padding: 1px 7px; border-radius: 4px; font-size: 11px; }
+  .tag.strong { background: rgba(255,122,89,.16); color: var(--strong); }
+  .tag.weak { background: rgba(77,212,160,.16); color: var(--weak); }
+  .tag.hit { background: rgba(77,159,255,.16); color: var(--accent); }
+  .empty { color: var(--dim); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RouteLLM <span>Dashboard</span></h1>
+  <div class="meta">
+    <span id="updated">--</span>
+    <button onclick="loadAll()">刷新</button>
+  </div>
+</header>
+
+<main>
+  <div class="cards" id="cards"></div>
+
+  <div class="charts">
+    <div class="panel">
+      <h2>请求量与强模型占比（时间序列）</h2>
+      <div class="chart" id="chart-ts"></div>
+    </div>
+    <div class="panel">
+      <h2>强 / 弱模型分配</h2>
+      <div class="chart" id="chart-pie"></div>
+    </div>
+    <div class="panel">
+      <h2>延迟分布（路由 vs LLM vs 总计）</h2>
+      <div class="chart" id="chart-lat"></div>
+    </div>
+    <div class="panel">
+      <h2>成本累积（实际 vs 若全走强模型）</h2>
+      <div class="chart" id="chart-cost"></div>
+    </div>
+    <div class="panel full">
+      <h2>最近请求</h2>
+      <div id="recent"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const AXIS = { axisLine:{lineStyle:{color:'#2a2f3a'}}, axisLabel:{color:'#8b93a7'},
+               splitLine:{lineStyle:{color:'#20242e'}} };
+const charts = {};
+
+function initChart(id) {
+  charts[id] = echarts.init(document.getElementById(id), null, {renderer:'canvas'});
+  return charts[id];
+}
+
+function fmtPct(v) { return (v * 100).toFixed(1) + '%'; }
+function fmtMs(v) { return v >= 1000 ? (v/1000).toFixed(2) + 's' : v.toFixed(1) + 'ms'; }
+function fmtUsd(v) { return '$' + v.toFixed(4); }
+
+function renderCards(s) {
+  const items = [
+    { label: '总请求数', value: s.total_requests.toLocaleString() },
+    { label: '强模型占比', value: fmtPct(s.strong_ratio),
+      sub: `${s.strong_count} 强 / ${s.weak_count} 弱` },
+    { label: '成本节省', value: fmtUsd(s.cost_saved_usd), hl: true,
+      sub: `实际 ${fmtUsd(s.actual_cost_usd)} / 全强 ${fmtUsd(s.cost_if_strong_usd)}` },
+    { label: '平均延迟', value: fmtMs(s.latency_ms.mean),
+      sub: `P95 ${fmtMs(s.latency_ms.p95)}` },
+    { label: '路由延迟', value: fmtMs(s.routing_latency_ms.mean),
+      sub: `P99 ${fmtMs(s.routing_latency_ms.p99)}` },
+    { label: '缓存命中率', value: fmtPct(s.cache_hit_rate) },
+    { label: '错误率', value: fmtPct(s.error_rate) },
+  ];
+  document.getElementById('cards').innerHTML = items.map(i => `
+    <div class="card ${i.hl ? 'hl' : ''}">
+      <div class="label">${i.label}</div>
+      <div class="value">${i.value}</div>
+      ${i.sub ? `<div class="sub">${i.sub}</div>` : ''}
+    </div>`).join('');
+}
+
+function renderTimeSeries(series) {
+  const c = charts['chart-ts'];
+  if (!series.length) { c.clear(); c.setOption({title:{text:'暂无数据',left:'center',top:'middle',textStyle:{color:'#8b93a7',fontSize:13}}}); return; }
+  const x = series.map(p => new Date(p.bucket * 1000).toLocaleTimeString('zh-CN', {hour12:false}));
+  c.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['请求数','强模型数'], textStyle:{color:'#8b93a7'}, top: 0 },
+    grid: { left: 45, right: 20, top: 36, bottom: 28 },
+    xAxis: { type: 'category', data: x, ...AXIS },
+    yAxis: { type: 'value', ...AXIS },
+    series: [
+      { name:'请求数', type:'line', smooth:true, data: series.map(p=>p.count),
+        itemStyle:{color:'#4d9fff'}, areaStyle:{opacity:.12} },
+      { name:'强模型数', type:'line', smooth:true, data: series.map(p=>p.strong_count),
+        itemStyle:{color:'#ff7a59'} },
+    ]
+  });
+}
+
+function renderPie(s) {
+  const c = charts['chart-pie'];
+  if (!s.total_requests) { c.clear(); c.setOption({title:{text:'暂无数据',left:'center',top:'middle',textStyle:{color:'#8b93a7',fontSize:13}}}); return; }
+  c.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
+    legend: { bottom: 0, textStyle:{color:'#8b93a7'} },
+    series: [{
+      type: 'pie', radius: ['45%','70%'], center:['50%','46%'],
+      label: { color:'#e6e8ee', formatter:'{b}\n{d}%' },
+      data: [
+        { name:'强模型', value: s.strong_count, itemStyle:{color:'#ff7a59'} },
+        { name:'弱模型', value: s.weak_count, itemStyle:{color:'#4dd4a0'} },
+      ]
+    }]
+  });
+}
+
+function renderLatency(s) {
+  const c = charts['chart-lat'];
+  const cats = ['P50','P95','P99','mean'];
+  const pick = o => [o.p50, o.p95, o.p99, o.mean];
+  c.setOption({
+    tooltip: { trigger: 'axis', valueFormatter: v => fmtMs(v) },
+    legend: { data:['路由','总延迟'], textStyle:{color:'#8b93a7'}, top:0 },
+    grid: { left: 55, right: 20, top: 36, bottom: 28 },
+    xAxis: { type:'category', data: cats, ...AXIS },
+    yAxis: { type:'value', ...AXIS },
+    series: [
+      { name:'路由', type:'bar', data: pick(s.routing_latency_ms), itemStyle:{color:'#4d9fff'} },
+      { name:'总延迟', type:'bar', data: pick(s.latency_ms), itemStyle:{color:'#ffc857'} },
+    ]
+  });
+}
+
+function renderCost(s) {
+  const c = charts['chart-cost'];
+  const saved = s.cost_saved_usd, actual = s.actual_cost_usd, full = s.cost_if_strong_usd;
+  c.setOption({
+    tooltip: { trigger:'axis', valueFormatter: v => fmtUsd(v) },
+    legend: { data:['实际成本','若全走强模型','节省'], textStyle:{color:'#8b93a7'}, top:0 },
+    grid: { left: 65, right: 20, top: 36, bottom: 28 },
+    xAxis: { type:'category', data:['成本'], ...AXIS },
+    yAxis: { type:'value', ...AXIS },
+    series: [
+      { name:'实际成本', type:'bar', stack:'c', data:[actual], itemStyle:{color:'#4dd4a0'} },
+      { name:'节省', type:'bar', stack:'c', data:[saved], itemStyle:{color:'#4d9fff'} },
+      { name:'若全走强模型', type:'bar', data:[full], itemStyle:{color:'#ff7a59'} },
+    ]
+  });
+}
+
+function renderRecent(rows) {
+  const el = document.getElementById('recent');
+  if (!rows.length) { el.innerHTML = '<div class="empty">暂无请求</div>'; return; }
+  el.innerHTML = `<table>
+    <thead><tr>
+      <th>时间</th><th>路由</th><th>win_rate</th><th>决策</th>
+      <th>路由延迟</th><th>总延迟</th><th>成本</th><th>缓存</th><th>状态</th>
+    </tr></thead><tbody>
+    ${rows.map(r => `<tr>
+      <td>${new Date(r.timestamp*1000).toLocaleTimeString('zh-CN',{hour12:false})}</td>
+      <td>${r.router_name}</td>
+      <td>${r.win_rate != null ? r.win_rate.toFixed(4) : '--'}</td>
+      <td><span class="tag ${r.routed_model}">${r.routed_model}</span></td>
+      <td>${fmtMs(r.routing_latency_ms || 0)}</td>
+      <td>${fmtMs(r.total_latency_ms || 0)}</td>
+      <td>${fmtUsd(r.estimated_cost || 0)}</td>
+      <td>${r.cache_hit ? '<span class="tag hit">HIT</span>' : '-'}</td>
+      <td>${r.status}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+}
+
+async function loadAll() {
+  try {
+    const [sum, ts, rec] = await Promise.all([
+      fetch('/api/metrics/summary').then(r => r.json()),
+      fetch('/api/metrics/timeseries?bucket_seconds=60').then(r => r.json()),
+      fetch('/api/metrics/recent?limit=15').then(r => r.json()),
+    ]);
+    renderCards(sum);
+    renderTimeSeries(ts.series);
+    renderPie(sum);
+    renderLatency(sum);
+    renderCost(sum);
+    renderRecent(rec.requests);
+    document.getElementById('updated').textContent =
+      '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
+  } catch (e) {
+    console.error(e);
+    document.getElementById('updated').textContent = '加载失败: ' + e.message;
+  }
+}
+
+['chart-ts','chart-pie','chart-lat','chart-cost'].forEach(initChart);
+window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+loadAll();
+setInterval(loadAll, 10000);  // 10s 自动刷新
+</script>
+</body>
+</html>

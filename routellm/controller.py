@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextvars import ContextVar
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -8,6 +9,42 @@ from litellm import acompletion, completion
 from tqdm import tqdm
 
 from routellm.routers.routers import ROUTER_CLS
+
+
+# ---------------------------------------------------------------------------
+# 路由元信息（供监控体系读取）
+#
+# 背景：网关的监控需要「路由置信度 win_rate」与「路由计算延迟」，但
+# _get_routed_model_for_completion 只返回模型名，把这两项丢掉了 ——
+# 导致 Dashboard 的 win_rate 显示 N/A、routing_latency_ms 恒为 0
+# （端到端验证时发现）。
+#
+# 用 ContextVar 而非实例属性：Controller 可能被多请求并发使用，
+# 实例属性会互相覆盖导致指标串台。ContextVar 按协程隔离，天然安全。
+# ---------------------------------------------------------------------------
+@dataclass
+class RoutingInfo:
+    """一次路由决策的元信息。"""
+
+    router: str
+    threshold: float
+    win_rate: float
+    routed_model: str          # "strong" / "weak"
+    latency_ms: float
+
+
+_ROUTING_INFO: ContextVar = ContextVar("routellm_routing_info", default=None)
+
+
+def _set_routing_info(info: RoutingInfo) -> None:
+    """记录最近一次路由元信息（覆盖式）。"""
+    _ROUTING_INFO.set(info)
+
+
+def get_routing_info() -> Optional[RoutingInfo]:
+    """读取本上下文最近一次路由元信息；无则 None。"""
+    return _ROUTING_INFO.get()
+
 
 # Default config for routers augmented using golden label data from GPT-4.
 # This is exactly the same as config.example.yaml.
@@ -39,6 +76,15 @@ class ModelPair:
 
 
 class Controller:
+    @property
+    def last_routing_info(self) -> Optional[RoutingInfo]:
+        """本上下文最近一次路由决策的元信息（供监控读取）。
+
+        实际存取在模块级 ContextVar（见 RoutingInfo 的说明），
+        这里只是给使用方一个直观的入口。
+        """
+        return get_routing_info()
+
     def __init__(
         self,
         routers: list[str],
@@ -107,10 +153,39 @@ class Controller:
     ):
         # Look at the last turn for routing.
         # Our current routers were only trained on first turn data, so more research is required here.
+        import time as _time
+
         prompt = messages[-1]["content"]
-        routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
+
+        t0 = _time.perf_counter()
+        router_instance = self.routers[router]
+        # 显式算 win_rate 而非直接调 route() —— 后者只返回模型名，
+        # 会把置信度丢掉（监控需要它）
+        try:
+            win_rate = float(router_instance.calculate_strong_win_rate(prompt))
+            routed_model = (
+                self.model_pair.strong if win_rate >= threshold else self.model_pair.weak
+            )
+        except Exception:  # noqa: BLE001
+            # 路由失败时回落到原接口（保持既有容错行为）
+            routed_model = router_instance.route(prompt, threshold, self.model_pair)
+            win_rate = 0.0
+        latency_ms = (_time.perf_counter() - t0) * 1000
 
         self.model_counts[router][routed_model] += 1
+
+        # 记录元信息供监控体系读取（见 RoutingInfo 的说明）
+        _set_routing_info(
+            RoutingInfo(
+                router=router,
+                threshold=float(threshold),
+                win_rate=win_rate,
+                routed_model=(
+                    "strong" if routed_model == self.model_pair.strong else "weak"
+                ),
+                latency_ms=round(latency_ms, 3),
+            )
+        )
 
         return routed_model
 
