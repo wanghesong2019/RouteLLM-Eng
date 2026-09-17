@@ -5,7 +5,40 @@
 - **环境**：`/mnt/data/wanghesong/conda-env/rag-dev`
 - **数据**：`lmsys-arena-human-preference-55k`（preprocess 后 55361 条）
 - **脚本**：`scripts/diagnose_sw_ranking_distribution.py`、`trace_sw_ranking_pipeline.py`、`probe_elo_weight_sensitivity.py`、`probe_weight_mapping.py`
-- **状态**：⚠️ 已找到系统偏差方向（缺 gpt4_judge_battles 数据集），待验证
+- **状态**：✅ 根因已确认并修复（补齐 gpt4_judge_battles 数据集），与官方均值比 0.9914
+
+## 最终结论（2026-09-17 收尾）
+
+**根因：本实现只加载了官方三个数据集配置中的一个。**
+
+官方 sw_ranking 需拼接 **两个** 数据集，此前只接了 arena：
+
+| 配置项 | 官方 | 修复前 | 修复后 |
+|---|---|---|---|
+| `arena_battle_datasets` | lmsys/...-55k + routellm/gpt4_judge_battles | 仅前者 | ✅ 两者 |
+| `arena_embedding_datasets` | 对应两份 embeddings | 仅前者 | ✅ 两者 |
+
+**修复效果**（与官方 thresholds 数据集逐条对标，抽样 100 条）：
+
+| 指标 | 官方 | 修复前 | 修复后 |
+|---|---|---|---|
+| mean | 0.2166 | 0.6919（差 3.2 倍） | **0.2148（均值比 0.9914）** |
+| std | 0.0025 | 0.0008 | **0.0030** |
+| corr(与官方逐条) | — | 0.076 | **0.8052** |
+
+**关键佐证**：补齐 judge 数据后，Elo 估计被显著改变 ——
+```
+修复前: strong(gpt-4-1106-preview)=1154.6, weak(mixtral)=1015.3, 差 +138.4
+修复后: strong=1109.8, weak=1335.7, 差 -226.0
+```
+连强弱关系都被翻转，印证了该数据集对 Elo 估计的决定性影响。
+
+**代码**：`SWRankingRouter.local_datasets`（多数据集拼接）+ `services/sw_ranking_server.py`
+的 `--judge-parquet/--judge-embeddings`。提交 `ef74894`、`3deb9f8`。
+
+---
+
+以下为诊断过程中的中间结论与排除记录，保留以说明推理链条。
 
 ## 问题
 

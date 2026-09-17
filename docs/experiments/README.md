@@ -13,7 +13,7 @@
 | 2026-09-17 | [sw_ranking 本地化与 Elo 求解器性能优化](2026-09-17-sw-ranking-localization.md) | ✅ 通过 | 本地 bge-m3 替代 OpenAI Embedding（55361 条 / 112s / $0）；**路由延迟 90% 在 `LogisticRegression.fit`**，换 newton-cholesky 后端到端 **394ms → 185ms（2.1×）**，模型排序完全一致 |
 | 2026-09-17 | [镜像重建与容器切换](2026-09-17-image-rebuild-container-switch.md) | ✅ 通过 | 新代码上线无回归（镜像 675→704MB，仍未装 torch）；**关键发现：真实网关中路由开销占比 <5%，下游 LLM 生成占 1.7~16s** |
 | 2026-09-17 | [sw_ranking 服务化上线](2026-09-17-sw-ranking-service-deployment.md) | ⚠️ 部分 | 链路打通：6071 host 服务 + 容器启用 `remote_sw_ranking`（零挂载保持轻量）；**但发现 win_rate 全挤在 0.689~0.693，0.5 阈值下永远走强模型**（bert 对比有正常区分度 0.297~0.453）→ 待查 |
-| 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ⚠️ 待验证 | 拿到官方 thresholds 数据集对标：**官方 sw_ranking 分布同样极窄（std=0.0025）→ 窄分布是算法固有特性**；但本实现与官方有系统偏差（mean 0.692 vs 0.216，corr(sw,bert) 0.076 vs 0.665）→ 疑因缺 `gpt4_judge_battles` 数据集 |
+| 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ✅ 已修复 | **根因：只接了 arena 未接 gpt4_judge_battles 数据集**（官方需拼接两个）；补齐后 mean 0.2148 vs 官方 0.2166（**均值比 0.9914**），逐条相关 **0.8052**（修复前 0.076） |
 
 ## 结论摘要（供快速引用）
 
@@ -43,41 +43,42 @@ compute_elo_mle_with_tie        355.5ms   90.1%   ← 瓶颈
 
 > 求解器性能对 `sample_weight` 的**逐元素排列**敏感。合成权重（uniform / beta）下 newton-cholesky 反而更慢，性能测试必须走真实路由链路取 `get_weightings(cosine_sims)`。
 
-### ⚠️ 已知问题：sw_ranking 与官方有系统偏差（2026-09-17，对标官方数据后修正）
+### ✅ 已修复：sw_ranking 曾与官方有 3.2 倍系统偏差（2026-09-17）
 
-**官方 thresholds 数据集**（`routellm/lmsys-arena-human-preference-55k-thresholds`，
-57477 行，含官方各路由 win_rate）显示：
+**根因：只接入了官方两个数据集中的一个。**
 
-| 路由 | mean | std | 全距 |
+```
+官方:   arena (lmsys/...-55k)  +  judge (routellm/gpt4_judge_battles)
+修复前: 仅 arena
+```
+
+**修复效果**（与官方 thresholds 数据集逐条对标，抽样 100 条）：
+
+| 指标 | 官方 | 修复前 | 修复后 |
 |---|---|---|---|
-| bert | 0.4066 | 0.1515 | 0.8851 |
-| **sw_ranking** | **0.2165** | **0.0025** | **0.0210** |
-| mf | 0.1159 | 0.0773 | 0.6165 |
+| mean | 0.2166 | 0.6919 | **0.2148（均值比 0.9914）** |
+| std | 0.0025 | 0.0008 | **0.0030** |
+| 逐条相关 | — | 0.076 | **0.8052** |
 
-**官方 sw_ranking 分布同样极窄（std=0.0025）→ 窄分布是算法固有特性，非缺陷。**
-官方通过 quantile 标定阈值使用它（`threshold = quantile(1 - strong_pct)`）。
+**关键佐证**：补齐 judge 后 Elo 估计被显著改变，连强弱关系都翻转：
+```
+修复前: strong(gpt-4-1106-preview)=1154.6, weak(mixtral)=1015.3, 差 +138.4
+修复后: strong=1109.8, weak=1335.7, 差 -226.0
+```
 
-**但本实现与官方有系统偏差：**
+**官方 sw_ranking 分布参考**（n=57477）：mean 0.2166，std 0.0025，全距 0.0210 ——
+分布本身极窄，是算法固有特性，**必须用 quantile 标定阈值**
+（`threshold = quantile(1 - strong_pct)`），不能沿用 bert 的 0.4~0.6 量级。
 
-| 项目 | 官方 | 本实现 |
+| 目标强模型占比 | 官方阈值 | 本实现阈值 |
 |---|---|---|
-| bert mean/std | 0.4058 / 0.1515 | 0.4082 / 0.1500 ✅ 吻合 |
-| sw_ranking mean | 0.2166 | **0.6919** ❌ 差 3.2 倍 |
-| corr(sw_ranking, bert) | **0.6647** | **0.076** ❌ 几乎无关 |
+| 50% | 0.216473 | 0.214868 |
+| 20% | 0.218800 | 0.217361 |
+| 10% | 0.219952 | 0.219144 |
 
-bert 两边吻合证明数据链路与测量方法可靠 → sw_ranking 的偏差是真问题。
-
-**最可疑原因**：官方拼接了两个数据集，本实现只用了 arena：
-```
-官方: lmsys/... + routellm/gpt4_judge_battles
-本实现: lmsys/... （缺 gpt4_judge_battles）
-```
-
-**官方 sw_ranking 阈值参考**（目标强模型占比 → 阈值）：
-50%→0.216473 / 30%→0.217959 / 20%→0.218800 / 10%→0.219952 / 5%→0.220915
-
-**建议**：生产路由继续用 `remote_bert`；下一步验证补上 `gpt4_judge_battles`
-后是否与官方对齐（该数据集需从 HF 获取）。
+**数据获取方式**（两者均可经 hf-mirror 直接 curl，非 gated）：
+- thresholds: `routellm/lmsys-arena-human-preference-55k-thresholds`（2.1MB）
+- judge battles: `routellm/gpt4_judge_battles`（159MB，parquet）
 
 ### 环境版本（43 号机 rag-dev 环境）
 
