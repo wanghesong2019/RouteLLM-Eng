@@ -48,7 +48,12 @@ router = APIRouter()
 _STORE: Optional[RuntimeConfigStore] = None
 
 # 可编辑字段（前端据此渲染表单；其余配置项为只读，改动需重启）
-EDITABLE_FIELDS = ("strong_model", "weak_model", "api_base", "api_key")
+EDITABLE_FIELDS = (
+    "strong_model", "weak_model",
+    "api_base", "api_key",  # 顶层 = 全局兜底
+    "strong_api_base", "strong_api_key",
+    "weak_api_base", "weak_api_key",
+)
 
 
 def set_store(store: RuntimeConfigStore) -> None:
@@ -71,15 +76,22 @@ class ConfigUpdate(BaseModel):
 
     所有字段可选 —— 未传或 None 表示"不修改"（避免前端未填字段清空配置）。
 
+    注意：**空字符串是合法的"清空"操作**（例如把 strong_api_base 置空
+    以回落到顶层全局值），与 None（不修改）语义不同。前端只提交有变化的字段。
+
     extra="forbid"：未知字段直接报错，防止拼写错误静默失效。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    strong_model: Optional[str] = Field(None, description="强模型名（含 provider 前缀）")
-    weak_model: Optional[str] = Field(None, description="弱模型名（含 provider 前缀）")
-    api_base: Optional[str] = Field(None, description="下游 LLM API 地址")
-    api_key: Optional[str] = Field(None, description="下游 LLM API key")
+    strong_model: Optional[str] = Field(None, description="强模型名（原始名，无需 provider 前缀）")
+    weak_model: Optional[str] = Field(None, description="弱模型名（原始名，无需 provider 前缀）")
+    api_base: Optional[str] = Field(None, description="全局 api_base（兜底）")
+    api_key: Optional[str] = Field(None, description="全局 api_key（兜底）")
+    strong_api_base: Optional[str] = Field(None, description="强模型专用 api_base（留空回落全局）")
+    strong_api_key: Optional[str] = Field(None, description="强模型专用 api_key（留空回落全局）")
+    weak_api_base: Optional[str] = Field(None, description="弱模型专用 api_base（留空回落全局）")
+    weak_api_key: Optional[str] = Field(None, description="弱模型专用 api_key（留空回落全局）")
     verify: bool = Field(
         False,
         description="是否先做连通性预检；失败则拒绝写入（避免改坏服务）",
@@ -139,11 +151,17 @@ async def _probe_downstream(
 
     用 /models 端点（比 chat/completions 便宜，且能同时验证 base_url 与 key）。
     返回 (是否成功, 详情)。
+
+    **能力边界**：本探测仅验证 base_url 可达 + key 有效，**不能**证明
+    具体模型名可用 —— 多数 OpenAI 兼容网关不校验 /models 的可见性。
+    前端文案须明确这一点，避免用户误解为"模型可用性已验证"。
     """
     import httpx
 
     if not base_url:
         return False, "api_base 为空"
+    if not api_key:
+        return False, "api_key 为空"
 
     url = base_url.rstrip("/") + "/models"
     try:
@@ -222,21 +240,58 @@ async def put_config(update: ConfigUpdate, request: Request = None) -> Dict[str,
 
 
 @router.post("/api/config/verify")
-async def verify_connectivity(request: Request = None) -> Dict[str, Any]:
+async def verify_connectivity(
+    request: Request = None, tier: Optional[str] = None
+) -> Dict[str, Any]:
     """连通性预检（不修改配置）。
 
     供前端"测试连接"按钮使用，也供 PUT 前的可选校验。
+
+    Args:
+        tier: "strong" / "weak" —— **按侧分别测试**（强弱可能接不同 provider，
+            各用各的 base_url / api_key）。不传则测顶层全局配置（向后兼容）。
+
+    响应中的 `probed` 明确回显"测的是哪一侧、哪个模型、哪个地址"，
+    前端据此展示，避免"不知道这个按钮测的是谁"的歧义。
     """
     _check_auth(request)
     store = get_store()
-    cfg = store.load()
-    ok, detail = await _probe_downstream(cfg.api_base, cfg.api_key, cfg.strong_model)
+
+    if tier is not None:
+        try:
+            RuntimeConfigStore._check_tier(tier)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+    base = store.effective_api_base(tier)
+    key = store.effective_api_key(tier)
+
+    try:
+        pair = store.effective_model_pair()
+        model = pair.strong if tier == "strong" else pair.weak
+    except ValueError:
+        model = ""  # 两侧都空 —— 预检必然失败，让 _probe 给出明确原因
+        if tier is None:
+            model = store.load().strong_model
+
+    ok, detail = await _probe_downstream(base, key, model)
+
+    # 只回显被探测对象的地址（非密钥），以及来源（该侧覆盖 or 全局兜底）
+    if tier is None:
+        source = "global"
+    else:
+        source = tier if getattr(store.load(), f"{tier}_api_base", "") else "global"
+
     return {
         "ok": ok,
         "detail": detail,
+        "tier": tier or "global",
         "probed": {
-            "api_base": cfg.api_base,
-            "strong_model": cfg.strong_model,
-            "api_key": mask_secret(cfg.api_key),
+            "tier": tier or "global",
+            "model": model,
+            "api_base": base,
+            "api_key": mask_secret(key),
+            "source": source,
         },
+        "note": "仅验证地址可达与密钥有效；模型名可用性需实际调用才可确认",
     }

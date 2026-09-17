@@ -60,12 +60,52 @@ class RuntimeConfig:
     """下游 LLM 的运行时配置（不可变）。
 
     frozen=True 是原子替换的基础 —— 任何"修改"都必须构造新对象。
+
+    字段分层（两套配置 + 一层兜底）
+
+        ┌─ 顶层 api_base / api_key ────────── 全局兜底（旧部署兼容）
+        └─ strong_api_base / strong_api_key ─ 强模型侧覆盖
+           weak_api_base   / weak_api_key   ─ 弱模型侧覆盖
+
+    取值规则（见 `RuntimeConfigStore.effective_*`）：
+
+        strong_api_base or api_base        # 该侧为空 → 回落顶层
+
+    这样"只填顶层一份"= 强弱共用（旧行为，零破坏）；"两侧各填"= 各自生效。
+
+    模型名同理有兜底，但语义不同：某一档**为空**时不是报错，而是
+    并入已配的那一档（见 `effective_model_pair`）—— 用户可能只配一个模型。
     """
 
     strong_model: str
     weak_model: str
     api_base: str
     api_key: str
+    strong_api_base: str = ""
+    strong_api_key: str = ""
+    weak_api_base: str = ""
+    weak_api_key: str = ""
+
+
+# 下游 provider 前缀：litellm 靠它选择适配器。用户配置里存**原始模型名**，
+# 由调用层（Controller.downstream_kwargs）在最后一步拼接。
+DEFAULT_PROVIDER_PREFIX = "openai"
+
+TIERS = ("strong", "weak")
+
+
+@dataclass(frozen=True)
+class ModelPairView:
+    """生效的强弱模型对（`effective_model_pair()` 的返回值）。
+
+    独立于 routellm.controller.ModelPair —— 避免 config 层反向依赖
+    controller 层（保持 config_runtime 可被单独导入/测试）。
+    """
+
+    strong: str
+    weak: str
+
+
 
 
 def mask_secret(value: str) -> str:
@@ -110,20 +150,29 @@ class RuntimeConfigStore:
             weak_model=g("WEAK_MODEL"),
             api_base=g("API_BASE"),
             api_key=g("API_KEY"),
+            strong_api_base=g("STRONG_API_BASE"),
+            strong_api_key=g("STRONG_API_KEY"),
+            weak_api_base=g("WEAK_API_BASE"),
+            weak_api_key=g("WEAK_API_KEY"),
         )
 
+    _FIELDS = (
+        "strong_model", "weak_model", "api_base", "api_key",
+        "strong_api_base", "strong_api_key", "weak_api_base", "weak_api_key",
+    )
+
     def _load_initial(self) -> RuntimeConfig:
-        """优先读配置文件；不存在或损坏则回落环境变量。"""
+        """优先读配置文件；不存在或损坏则回落环境变量。
+
+        向后兼容：旧配置文件（只有 strong_model/weak_model/api_base/api_key）
+        缺少每侧字段时按空字符串处理 —— 空的每侧字段会回落到顶层，
+        因此旧配置的**行为与改造前完全一致**。
+        """
         if os.path.exists(self.path):
             try:
                 with open(self.path, encoding="utf-8") as f:
                     data = json.load(f)
-                cfg = RuntimeConfig(
-                    strong_model=data.get("strong_model", ""),
-                    weak_model=data.get("weak_model", ""),
-                    api_base=data.get("api_base", ""),
-                    api_key=data.get("api_key", ""),
-                )
+                cfg = RuntimeConfig(**{k: data.get(k, "") or "" for k in self._FIELDS})
                 logger.info("运行时配置已从 %s 加载", self.path)
                 return cfg
             except Exception as e:  # noqa: BLE001
@@ -148,9 +197,73 @@ class RuntimeConfigStore:
     def masked(self) -> Dict[str, Any]:
         """掩码视图（供 GET 接口回显，不含密钥明文）。"""
         d = asdict(self._config)
-        d["api_key"] = mask_secret(self._config.api_key)
+        for field in ("api_key", "strong_api_key", "weak_api_key"):
+            d[field] = mask_secret(d.get(field, ""))
         d["api_key_masked"] = True
+
+        # 单模型模式提示：前端据此告知用户"未填的一档已并入已填档"
+        try:
+            pair = self.effective_model_pair()
+            single = not (self._config.strong_model and self._config.weak_model)
+            d["single_model_mode"] = single
+            d["effective_strong_model"] = pair.strong
+            d["effective_weak_model"] = pair.weak
+        except ValueError:
+            d["single_model_mode"] = False
+            d["effective_strong_model"] = ""
+            d["effective_weak_model"] = ""
         return d
+
+    # ------------------------------------------------------- 生效值（含兜底）
+
+    def effective_api_base(self, tier: Optional[str] = None) -> str:
+        """某侧生效的 api_base：该侧值优先，为空回落顶层。
+
+        Args:
+            tier: "strong" / "weak"；None 表示只要顶层（向后兼容）。
+
+        Raises:
+            ValueError: tier 不是 "strong" / "weak"（防拼错静默回落）。
+        """
+        if tier is None:
+            return self._config.api_base
+        self._check_tier(tier)
+        return getattr(self._config, f"{tier}_api_base") or self._config.api_base
+
+    def effective_api_key(self, tier: Optional[str] = None) -> str:
+        """某侧生效的 api_key：该侧值优先，为空回落顶层。"""
+        if tier is None:
+            return self._config.api_key
+        self._check_tier(tier)
+        return getattr(self._config, f"{tier}_api_key") or self._config.api_key
+
+    @staticmethod
+    def _check_tier(tier: str) -> None:
+        if tier not in TIERS:
+            raise ValueError(f"未知 tier: {tier!r}（应为 {TIERS} 之一）")
+
+    def effective_model_pair(self) -> "ModelPairView":
+        """生效的强弱模型对（含**单模型兜底**）。
+
+        规则：某一档为空 → 并入已配的那一档。
+
+            只配强 → (strong, strong)     只配弱 → (weak, weak)
+            两侧都配 → (strong, weak)      两侧都空 → ValueError
+
+        为何不报错而是并入：用户可能只想配一个模型（比如先跑通链路），
+        此时"路由到空模型名"会在下游拿到 400 —— 是必须避免的失败模式。
+        两侧都空则是真错误，必须显式失败（fail-fast），不留到请求期。
+        """
+        s = (self._config.strong_model or "").strip()
+        w = (self._config.weak_model or "").strip()
+
+        if not s and not w:
+            raise ValueError(
+                "强模型与弱模型均为空：至少需配置一个模型名"
+                "（未配置的一档会自动并入已配置档）"
+            )
+        return ModelPairView(strong=s or w, weak=w or s)
+
 
     # ------------------------------------------------------------------ 写
 

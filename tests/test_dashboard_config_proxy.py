@@ -131,15 +131,23 @@ def test_gateway_unreachable_returns_error_not_raise(proxy, monkeypatch):
 
 
 def test_gateway_401_propagates(proxy, monkeypatch):
-    """网关返回 401 时应明确告知（key 配置错误）。"""
+    """网关返回 401 时应明确告知（key 配置错误）。
+
+    行为变更（Phase 3.6）：401 属 4xx 客户端错误 → **保留状态码透传**，
+    而不再归一化成 200 + proxy_error —— 后者会让前端无法区分
+    "成功"与"鉴权失败"。原意图（明确告知 401）由状态码 + detail 承载。
+    """
+    from fastapi import HTTPException
 
     async def fake_request(method, path, body=None, timeout=10.0):
         return 401, {"error": {"message": "Incorrect API key"}}
 
     monkeypatch.setattr(proxy, "_request", fake_request)
-    res = asyncio.run(proxy.forward_get_config())
-    assert res.get("proxy_error") is not None
-    assert "401" in res["proxy_error"]
+
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(proxy.forward_get_config())
+    assert e.value.status_code == 401
+    assert "Incorrect API key" in str(e.value.detail)
 
 
 def test_gateway_5xx_returns_error(proxy, monkeypatch):
@@ -166,3 +174,54 @@ def test_config_page_route_exists():
 
     paths = {getattr(r, "path", None) for r in m.router.routes}
     assert "/config" in paths, "缺少配置页面路由 /config"
+
+
+# --------------------------------------------- verify 按侧透传（强弱各测各的）
+
+
+def test_forward_verify_passes_tier(monkeypatch):
+    """转发 verify 时须把 tier 透传到网关（否则强弱无法各测各的）。"""
+    import asyncio
+
+    import routellm.monitoring.dashboard.config_proxy as m
+
+    seen = {}
+
+    async def fake_request(method, path, body=None, timeout=15.0):
+        seen["method"], seen["path"] = method, path
+        return 200, {"ok": True, "tier": "weak"}
+
+    monkeypatch.setattr(m, "_request", fake_request)
+    res = asyncio.run(m.forward_verify(tier="weak"))
+
+    assert seen["method"] == "POST"
+    assert "tier=weak" in seen["path"], "tier 未透传给网关"
+    assert res["ok"] is True
+
+
+def test_forward_verify_without_tier_unchanged(monkeypatch):
+    """不传 tier 时不加查询串（向后兼容）。"""
+    import asyncio
+
+    import routellm.monitoring.dashboard.config_proxy as m
+
+    seen = {}
+
+    async def fake_request(method, path, body=None, timeout=15.0):
+        seen["path"] = path
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(m, "_request", fake_request)
+    asyncio.run(m.forward_verify())
+
+    assert seen["path"] == "/api/config/verify"
+
+
+def test_proxy_verify_route_accepts_tier():
+    """路由须接受 tier 查询参数。"""
+    import inspect
+
+    import routellm.monitoring.dashboard.config_proxy as m
+
+    sig = inspect.signature(m.proxy_verify)
+    assert "tier" in sig.parameters, "proxy_verify 未接受 tier 参数"

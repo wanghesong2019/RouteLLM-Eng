@@ -26,6 +26,7 @@
 | `compare_with_official_thresholds.py` | 与官方 thresholds 数据集逐条对标 win_rate |
 | `verify_sw_ranking_multi_dataset.py` | 验证多数据集模式的 SWRankingRouter 与官方对齐 |
 | `eval_router_apgr.py` | 按论文指标 APGR 评测路由在 MMLU / GSM8K 上的表现 |
+| `verify_per_tier_config.py` | 端到端验证强弱分侧配置：分侧可编辑、原始模型名、两个测试连接各测各的、单模型兜底（含非法 tier 应被拒） |
 
 ## 用法
 

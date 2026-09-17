@@ -87,8 +87,37 @@ async def _request(
     return r.status_code, data
 
 
+def _raise_for_client_error(status: int, data: Any) -> None:
+    """4xx 客户端错误：抛 HTTPException **保留状态码**。
+
+    为何不能像 5xx 那样归一化成 200 + proxy_error
+    --------------------------------------------
+    归一化的初衷是"面板不因网关异常整页崩"，对 5xx（网关自身故障）成立；
+    但 4xx 表示**请求本身有问题**（参数非法 / 鉴权失败 / 资源不存在），
+    此时把状态码抹成 200 会让前端无法区分"成功"和"参数错"。
+
+    实测暴露路径：`POST /api/config/verify?tier=medium`
+        网关 → 422 {"detail": "未知 tier"}
+        面板（旧）→ HTTP 200 {"proxy_error": ...}  ← 前端误判为成功
+
+    详情原样透传（含网关的 detail），前端才能给出具体提示。
+    """
+    from fastapi import HTTPException
+
+    raise HTTPException(status_code=status, detail=_extract_detail(data))
+
+
+def _extract_detail(data: Any) -> Any:
+    """从网关响应里取出可读的错误详情（优先 detail，其次整体）。"""
+    if isinstance(data, dict) and "detail" in data:
+        return data["detail"]
+    if isinstance(data, dict) and "error" in data:
+        return data["error"]
+    return data
+
+
 def _error_payload(exc: Optional[Exception] = None, status: Optional[int] = None) -> Dict[str, Any]:
-    """把各类失败统一成前端可展示的结构。"""
+    """把 5xx / 不可达统一成前端可展示的结构（面板不崩）。"""
     if exc is not None:
         return {
             "proxy_error": f"{type(exc).__name__}: {exc}",
@@ -105,8 +134,26 @@ def _error_payload(exc: Optional[Exception] = None, status: Optional[int] = None
     }
 
 
+def _handle_error_status(status: int, data: Any, where: str) -> Dict[str, Any]:
+    """按状态码分派错误处理。
+
+    4xx 客户端错误 → 抛 HTTPException（保留状态码，见 `_raise_for_client_error`）
+    5xx 服务端错误 → 返回归一化结构（面板不崩）
+
+    Returns:
+        5xx 时的归一化错误结构。4xx 时不返回（抛异常）。
+    """
+    logger.warning("转发 %s 网关返回 %s: %s", where, status, str(data)[:200])
+    if 400 <= status < 500:
+        _raise_for_client_error(status, data)
+    return {**_error_payload(status=status), "proxy_status": status}
+
+
 async def forward_get_config() -> Dict[str, Any]:
-    """转发 GET /api/config。失败时返回带 proxy_error 的结构（不抛异常）。"""
+    """转发 GET /api/config。
+
+    4xx 抛 HTTPException（保留状态码）；5xx / 不可达返回 proxy_error 结构。
+    """
     try:
         status, data = await _request("GET", "/api/config")
     except Exception as e:  # noqa: BLE001
@@ -114,8 +161,7 @@ async def forward_get_config() -> Dict[str, Any]:
         return _error_payload(exc=e)
 
     if status >= 400:
-        logger.warning("网关返回 %s: %s", status, str(data)[:200])
-        return {**_error_payload(status=status), "proxy_status": status}
+        return _handle_error_status(status, data, "GET /api/config")
 
     if isinstance(data, dict):
         data.setdefault("proxy_error", None)
@@ -123,7 +169,10 @@ async def forward_get_config() -> Dict[str, Any]:
 
 
 async def forward_put_config(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """转发 PUT /api/config。"""
+    """转发 PUT /api/config。
+
+    4xx 抛 HTTPException（如未知字段 422）；5xx / 不可达归一化。
+    """
     try:
         status, data = await _request("PUT", "/api/config", body=payload)
     except Exception as e:  # noqa: BLE001
@@ -131,25 +180,35 @@ async def forward_put_config(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _error_payload(exc=e)
 
     if status >= 400:
-        logger.warning("网关返回 %s: %s", status, str(data)[:200])
-        return {**_error_payload(status=status), "proxy_status": status}
+        return _handle_error_status(status, data, "PUT /api/config")
 
     if isinstance(data, dict):
         data.setdefault("proxy_error", None)
     return data
 
 
-async def forward_verify() -> Dict[str, Any]:
-    """转发 POST /api/config/verify（连通性预检）。"""
+async def forward_verify(tier: Optional[str] = None) -> Dict[str, Any]:
+    """转发 POST /api/config/verify（连通性预检）。
+
+    Args:
+        tier: "strong" / "weak" —— 按侧测试；None 表示测全局（向后兼容）。
+            透传给网关，由网关决定用哪一侧的 base_url / api_key。
+
+    4xx 抛 HTTPException（如非法 tier → 422）；5xx / 不可达归一化。
+    """
+    path = "/api/config/verify"
+    if tier:
+        path += f"?tier={tier}"
     try:
-        status, data = await _request("POST", "/api/config/verify")
+        status, data = await _request("POST", path)
     except Exception as e:  # noqa: BLE001
         logger.warning("转发连通性预检失败: %s", e)
         return _error_payload(exc=e)
 
     if status >= 400:
-        return {**_error_payload(status=status), "proxy_status": status}
+        return _handle_error_status(status, data, "POST /api/config/verify")
     return data
+
 
 
 # --------------------------------------------------------------------------- 路由
@@ -168,9 +227,13 @@ async def proxy_put_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/api/config/verify")
-async def proxy_verify() -> Dict[str, Any]:
-    """连通性预检（转发到网关）。"""
-    return await forward_verify()
+async def proxy_verify(tier: Optional[str] = None) -> Dict[str, Any]:
+    """连通性预检（转发到网关）。
+
+    tier 查询参数按侧透传 —— 强弱可能接不同 provider，各测各的。
+    """
+    return await forward_verify(tier=tier)
+
 
 
 @router.get("/api/config/gateway")

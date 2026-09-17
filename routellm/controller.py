@@ -113,18 +113,72 @@ class Controller:
         )
 
     def live_model_pair(self):
-        """取当前生效的强弱模型对（供路由决策与上报使用）。"""
+        """取当前生效的强弱模型对（供路由决策与上报使用）。
+
+        含**单模型兜底**：某一档模型名为空时并入已配的那一档，
+        因此这里返回的两个名字都不会是空串（除非两侧都空 → 此时抛错，
+        由调用方决定如何处理，不会带着空模型名去调下游）。
+
+        未注入 config_store 时用构造参数（向后兼容，行为不变）。
+        """
         cfg = self.live_config()
+        if self.config_store is not None:
+            pair = self.config_store.effective_model_pair()
+            return ModelPair(strong=pair.strong, weak=pair.weak)
         return ModelPair(strong=cfg.strong_model, weak=cfg.weak_model)
 
-    def downstream_kwargs(self, model: str) -> dict:
-        """构造下游 litellm 调用参数（base_url / api_key 按当前配置现取）。"""
+    def downstream_kwargs(self, model: str, tier: Optional[str] = None) -> dict:
+        """构造下游 litellm 调用参数（base_url / api_key 按当前配置现取）。
+
+        Args:
+            model: **原始模型名**（如 `deepseek-ai/DeepSeek-V4-Pro`）。
+                前缀由本方法统一拼接 —— 用户配置里不写前缀（方案 a）。
+            tier: "strong" / "weak"，决定用哪一侧的 base_url / api_key；
+                None 表示用顶层全局配置（向后兼容）。
+
+        Returns:
+            含 model / api_base / api_key 的 dict，可直接 **kwargs 给 litellm。
+        """
         cfg = self.live_config()
+        if self.config_store is not None:
+            base = self.config_store.effective_api_base(tier)
+            key = self.config_store.effective_api_key(tier)
+        else:
+            base, key = cfg.api_base, cfg.api_key
         return {
-            "model": model,
-            "api_base": cfg.api_base or None,
-            "api_key": cfg.api_key or None,
+            "model": self._qualify_model(model),
+            "api_base": base or None,
+            "api_key": key or None,
         }
+
+    @staticmethod
+    def _qualify_model(model: str) -> str:
+        """给原始模型名补 provider 前缀（litellm 靠前缀选择适配器）。
+
+        只在此处拼一次 —— 配置层与前端都存/显示原始名。
+        已带前缀的名字原样返回（避免 `openai/openai/...`）。
+
+        注意：前缀是**必需**的，直接去掉会让 litellm 抛 BadRequestError。
+        所以拼接必须发生在调用前的最后一步，且只此一处。
+        """
+        from routellm.config_runtime.store import DEFAULT_PROVIDER_PREFIX
+
+        m = (model or "").strip()
+        if not m:
+            return m
+        # 已知 provider 前缀（litellm 支持的常见值）—— 用户若显式带了就尊重原样。
+        # 用白名单而非"含斜杠即视为前缀"：模型名本身也常含斜杠
+        # （如 deepseek-ai/DeepSeek-V4-Pro），后者会误判。
+        known = {
+            "openai", "azure", "anthropic", "bedrock", "vertex_ai", "gemini",
+            "cohere", "mistral", "ollama", "together_ai", "deepseek",
+            "groq", "xai", "openrouter", "siliconflow", "hosted_vllm",
+        }
+        head = m.split("/")[0].lower() if "/" in m else ""
+        if head in known:
+            return m
+        return f"{DEFAULT_PROVIDER_PREFIX}/{m}"
+
 
     def __init__(
         self,
