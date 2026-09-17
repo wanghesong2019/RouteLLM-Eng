@@ -102,6 +102,30 @@ _METRICS_CTX: contextvars.ContextVar = contextvars.ContextVar("routellm_metrics"
 app = fastapi.FastAPI(lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
+# API key 鉴权
+#
+# 网关对外暴露（0.0.0.0），必须鉴权 —— 否则任何人可白嫖下游 LLM 额度。
+# 客户端用法与普通模型 API 服务一致：Authorization: Bearer <key>
+#
+# 未配置 ROUTELLM_GATEWAY_API_KEY 时不鉴权（内网/回环部署的向后兼容）。
+# 白名单：/health、/dashboard、/metrics、/api/*（运维用途，不要求业务 key）。
+# ---------------------------------------------------------------------------
+try:
+    from routellm.monitoring.auth import ApiKeyMiddleware as _ApiKeyMiddleware
+    from routellm.monitoring.auth import is_auth_enabled as _auth_enabled
+
+    app.add_middleware(_ApiKeyMiddleware)
+    if _auth_enabled():
+        logging.info("API key 鉴权已启用（/v1/* 需 Authorization: Bearer）")
+    else:
+        logging.warning(
+            "API key 鉴权未启用（未设置 ROUTELLM_GATEWAY_API_KEY）——"
+            "对外暴露时请务必配置"
+        )
+except Exception as _e:  # noqa: BLE001
+    logging.warning("鉴权中间件初始化失败: %s", _e)
+
+# ---------------------------------------------------------------------------
 # 监控（方案文档 4.2，P0）
 #
 # 挂载自研 Dashboard + Prometheus 端点，并用中间件采集请求级指标。
@@ -123,13 +147,18 @@ if _METRICS_ENABLED:
         )
         _set_metrics_store(_METRICS_STORE)
 
+        # 网关端口也挂面板路由（便利性；外部访问请用独立的 dashboard 容器）
         app.include_router(_dashboard_router)
         # 中间件需在 app 创建后添加；ctx_var 用本模块的 _METRICS_CTX
         app.add_middleware(_MetricsMiddleware, store=_METRICS_STORE, ctx_var=_METRICS_CTX)
+
         logging.info(
-            "监控已启用: DB=%s, Dashboard=/dashboard, Prometheus=/metrics",
+            "监控已启用: DB=%s, 面板路由已挂载于网关端口, Prometheus=/metrics",
             os.environ.get("ROUTELLM_METRICS_DB", "/tmp/routellm_metrics.db"),
         )
+        # 注：Dashboard 已拆为独立容器（见 dashboard/app.py + docker-compose.yml），
+        # 不再在网关进程内起第二个端口 —— 同进程双端口会与 Docker 的端口映射
+        # 争抢同一端口（实测踩过）。网关这里只保留 /dashboard 路由做便利访问。
     except Exception as _e:  # noqa: BLE001
         logging.warning("监控初始化失败（服务继续运行）: %s", _e)
 
@@ -416,9 +445,18 @@ if __name__ == "__main__":
 
     _boot = Settings.from_env()
     print("Launching server with routers:", _boot.routers)
+    # 关键：传 **app 对象** 而非 "routellm.openai_server:app" 字符串。
+    # 字符串形式会让 uvicorn 重新 import 本模块，产生两份模块实例 ——
+    # lifespan 里的 `global CONTROLLER` 更新的是 __main__ 那份，而
+    # 请求处理函数引用的是 routellm.openai_server 那份，导致运行时
+    # CONTROLLER 仍为 None（AttributeError: 'NoneType' object has no
+    # attribute 'acompletion'）。实测踩过。
+    #
+    # workers 默认 0 会让 uvicorn 走多进程分支，与上述问题叠加；
+    # 这里显式传 None 表示单进程。
     uvicorn.run(
-        "routellm.openai_server:app",
+        app,
         port=_boot.port,
         host=_boot.host,
-        workers=_args.workers,
+        workers=None,
     )

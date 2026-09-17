@@ -258,16 +258,15 @@ def test_dashboard_routes_registered():
 
 def test_dashboard_summary_api(store):
     """summary API 应返回前端所需结构。"""
-    from routellm.monitoring.dashboard import api_summary
-
     _sample(store, request_id="r1", routed_model="strong")
     _sample(store, request_id="r2", routed_model="weak")
 
-    # 注入 store
-    from routellm.monitoring import dashboard
+    # 注入 store。注意：api_summary 定义在 app 子模块，包级只导出常用入口
+    # （包名与子模块同名会有遮蔽问题，见 dashboard/__init__.py 的说明）
+    import routellm.monitoring.dashboard.app as dash_app
 
-    dashboard.set_store(store)
-    res = asyncio.run(api_summary())
+    dash_app.set_store(store)
+    res = asyncio.run(dash_app.api_summary())
     assert res["total_requests"] == 2
     assert "cost_saved_usd" in res
     assert "latency_ms" in res

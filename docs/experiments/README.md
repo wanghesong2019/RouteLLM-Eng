@@ -18,6 +18,7 @@
 | 2026-09-17 | [bert 路由的论文指标评测（APGR）](2026-09-17-bert-apgr-evaluation.md) | ✅ 通过 | **MMLU APGR 0.5267 / GSM8K 0.5333**（对照全弱 0.68/0.64、全强 0.79/0.86）；评测无需真实 LLM API，5700 题评分 7.9s |
 | 2026-09-17 | [多级缓存层（P0）](2026-09-17-multi-tier-cache.md) | ✅ 通过 | 缓存 **win_rate 结果**（而非仅 embedding，因实测 Elo 回归占 90%）；**miss 290~600ms → hit 0.02~0.05ms（快约 4 个数量级）**；支持多级编排、回填、故障降级 |
 | 2026-09-17 | [监控体系 + Dashboard（P0）](2026-09-17-monitoring-dashboard.md) | ✅ 通过 | 自研 Dashboard（ECharts 单页）+ Prometheus 端点；指标落 **SQLite**（解决原实现「重启丢失」）；端到端验证含 win_rate 与路由延迟采集 |
+| 2026-09-17 | [网关鉴权 + Dashboard 独立容器 + compose 部署](2026-09-17-gateway-auth-and-compose.md) | ✅ 通过 | 双容器 compose（网关 6060 需 Bearer key / 面板 8092 免鉴权）；**鉴权中间件曾拦截 lifespan scope 致业务全 500**（已修 + 加守护测试） |
 
 ## 结论摘要（供快速引用）
 

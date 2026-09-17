@@ -1,0 +1,41 @@
+# RouteLLM Dashboard 独立容器镜像
+#
+# 只含面板所需的最小依赖（FastAPI + uvicorn）—— **不含** torch/transformers/
+# litellm/controller 等网关重依赖（面板只读 SQLite 指标并渲染页面）。
+#
+# 构建：
+#   docker build -f Dockerfile.dashboard -t routellm-dashboard:dev .
+#
+# 运行（容器内 8080，由 compose 映射到宿主机）：
+#   docker run -p 8092:8080 -v <metrics-dir>:/data routellm-dashboard:dev
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 面板最小依赖集：FastAPI + uvicorn 即可
+# 不用 requirements-gateway.txt（那含 litellm/pandas/sklearn 等网关依赖）
+RUN pip install --no-cache-dir \
+    "fastapi>=0.110" \
+    "uvicorn[standard]>=0.27" \
+    "pydantic>=2.0"
+
+# 只复制面板所需代码 —— 不复制网关模块，保持镜像小
+COPY routellm/__init__.py /app/routellm/__init__.py
+COPY routellm/monitoring/__init__.py /app/routellm/monitoring/__init__.py
+COPY routellm/monitoring/store.py /app/routellm/monitoring/store.py
+COPY routellm/monitoring/metrics.py /app/routellm/monitoring/metrics.py
+COPY routellm/monitoring/dashboard/ /app/routellm/monitoring/dashboard/
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    ROUTELLM_METRICS_DB=/data/metrics.db \
+    ROUTELLM_DASHBOARD_PORT=8080 \
+    ROUTELLM_DASHBOARD_HOST=0.0.0.0
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=4).status==200 else 1)"
+
+CMD ["python", "-m", "routellm.monitoring.dashboard.app", "--port", "8080", "--host", "0.0.0.0"]
