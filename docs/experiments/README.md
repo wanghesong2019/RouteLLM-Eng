@@ -13,7 +13,7 @@
 | 2026-09-17 | [sw_ranking 本地化与 Elo 求解器性能优化](2026-09-17-sw-ranking-localization.md) | ✅ 通过 | 本地 bge-m3 替代 OpenAI Embedding（55361 条 / 112s / $0）；**路由延迟 90% 在 `LogisticRegression.fit`**，换 newton-cholesky 后端到端 **394ms → 185ms（2.1×）**，模型排序完全一致 |
 | 2026-09-17 | [镜像重建与容器切换](2026-09-17-image-rebuild-container-switch.md) | ✅ 通过 | 新代码上线无回归（镜像 675→704MB，仍未装 torch）；**关键发现：真实网关中路由开销占比 <5%，下游 LLM 生成占 1.7~16s** |
 | 2026-09-17 | [sw_ranking 服务化上线](2026-09-17-sw-ranking-service-deployment.md) | ⚠️ 部分 | 链路打通：6071 host 服务 + 容器启用 `remote_sw_ranking`（零挂载保持轻量）；**但发现 win_rate 全挤在 0.689~0.693，0.5 阈值下永远走强模型**（bert 对比有正常区分度 0.297~0.453）→ 待查 |
-| 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ✅ 根因定位 | **`get_weightings` 动态范围仅 7 倍（14~100）→ 5.5 万条近似等权 → 全量参与时 elo_diff 全距为 0**；排除 sigmoid 饱和与 bge-m3 因素；候选修复（拉大动态范围）已验证方向正确，待 benchmark 论证 |
+| 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ⚠️ 待验证 | 拿到官方 thresholds 数据集对标：**官方 sw_ranking 分布同样极窄（std=0.0025）→ 窄分布是算法固有特性**；但本实现与官方有系统偏差（mean 0.692 vs 0.216，corr(sw,bert) 0.076 vs 0.665）→ 疑因缺 `gpt4_judge_battles` 数据集 |
 
 ## 结论摘要（供快速引用）
 
@@ -43,34 +43,41 @@ compute_elo_mle_with_tie        355.5ms   90.1%   ← 瓶颈
 
 > 求解器性能对 `sample_weight` 的**逐元素排列**敏感。合成权重（uniform / beta）下 newton-cholesky 反而更慢，性能测试必须走真实路由链路取 `get_weightings(cosine_sims)`。
 
-### ⚠️ 已知问题：sw_ranking 区分度不足（2026-09-17，根因已定位）
+### ⚠️ 已知问题：sw_ranking 与官方有系统偏差（2026-09-17，对标官方数据后修正）
 
-| prompt | sw_ranking | bert |
+**官方 thresholds 数据集**（`routellm/lmsys-arena-human-preference-55k-thresholds`，
+57477 行，含官方各路由 win_rate）显示：
+
+| 路由 | mean | std | 全距 |
+|---|---|---|---|
+| bert | 0.4066 | 0.1515 | 0.8851 |
+| **sw_ranking** | **0.2165** | **0.0025** | **0.0210** |
+| mf | 0.1159 | 0.0773 | 0.6165 |
+
+**官方 sw_ranking 分布同样极窄（std=0.0025）→ 窄分布是算法固有特性，非缺陷。**
+官方通过 quantile 标定阈值使用它（`threshold = quantile(1 - strong_pct)`）。
+
+**但本实现与官方有系统偏差：**
+
+| 项目 | 官方 | 本实现 |
 |---|---|---|
-| hi | 0.6892 | 0.4007 |
-| What is 1+1? | 0.6931 | 0.2970 |
-| 证明√2无理数 | 0.6920 | 0.4533 |
+| bert mean/std | 0.4058 / 0.1515 | 0.4082 / 0.1500 ✅ 吻合 |
+| sw_ranking mean | 0.2166 | **0.6919** ❌ 差 3.2 倍 |
+| corr(sw_ranking, bert) | **0.6647** | **0.076** ❌ 几乎无关 |
 
-分布实测（n=300）：sw_ranking **std=0.0008 / 全距 0.0043**，bert **std=0.15 / 全距 0.844**（相差约 190 倍）。
+bert 两边吻合证明数据链路与测量方法可靠 → sw_ranking 的偏差是真问题。
 
-**根因**：`get_weightings(sims) = 10 * 10^(sim/max_sim)` 的**动态范围仅 7 倍**（实测 14.3~100）。
-最不相似的 battle 也拿到约 1/7 权重 → 5.5 万条样本**近似等权**参与 LogisticRegression
-→ 单 prompt 的相似度差异被平均掉。
+**最可疑原因**：官方拼接了两个数据集，本实现只用了 arena：
+```
+官方: lmsys/... + routellm/gpt4_judge_battles
+本实现: lmsys/... （缺 gpt4_judge_battles）
+```
 
-**决定性证据**（top-K 对照）：
+**官方 sw_ranking 阈值参考**（目标强模型占比 → 阈值）：
+50%→0.216473 / 30%→0.217959 / 20%→0.218800 / 10%→0.219952 / 5%→0.220915
 
-| topK | 两个极端 prompt 的 elo_diff | 全距 |
-|---|---|---|
-| 100 | [2.17, 89.23] | 87.05 |
-| 全部 55361 | **[141.013, 141.013]** | **0** |
-
-**已排除的假设**：sigmoid 饱和（斜率仅降 15%，非 150 倍）；elo_strong/weak 同增同减（corr=0.07）；bge-m3 编码能力（向量间相似度 0.3~0.7 正常）。
-
-**候选修复**（已验证方向，未决策）：拉大权重动态范围。`pow p=16` → winrate 全距 0.4002；
-`top 1%` → 0.1764。`pow p=8` 的逐条结果方向正确（hi→0.654 最低，证明√2→0.698 最高）。
-
-**建议**：生产路由继续用 `remote_bert`；修复前需先用官方 thresholds 数据集对标 +
-benchmark 准确率论证，不可擅自改动上游算法语义。
+**建议**：生产路由继续用 `remote_bert`；下一步验证补上 `gpt4_judge_battles`
+后是否与官方对齐（该数据集需从 HF 获取）。
 
 ### 环境版本（43 号机 rag-dev 环境）
 

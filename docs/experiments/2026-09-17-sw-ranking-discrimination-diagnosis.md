@@ -5,7 +5,7 @@
 - **环境**：`/mnt/data/wanghesong/conda-env/rag-dev`
 - **数据**：`lmsys-arena-human-preference-55k`（preprocess 后 55361 条）
 - **脚本**：`scripts/diagnose_sw_ranking_distribution.py`、`trace_sw_ranking_pipeline.py`、`probe_elo_weight_sensitivity.py`、`probe_weight_mapping.py`
-- **状态**：✅ 根因已定位，⚠️ 修复方案待论证（未改代码）
+- **状态**：⚠️ 已找到系统偏差方向（缺 gpt4_judge_battles 数据集），待验证
 
 ## 问题
 
@@ -124,7 +124,96 @@ prompt → bge-m3 向量 → cosine 相似度 → get_weightings → 加权 Elo 
 > `routellm/lmsys-arena-human-preference-55k-thresholds` 数据集对标，
 > 本机网络受限（huggingface.co 仅 IPv6 不可达），待手动获取。
 
-## 候选修复（已验证有效性，未决策）
+## 与官方数据的对标（关键，修正前述结论）
+
+从 HuggingFace 获取了官方发布的
+`routellm/lmsys-arena-human-preference-55k-thresholds` 数据集
+（2.1MB parquet，57477 行 × `id/bert/causal_llm/sw_ranking/mf` 五列，
+即官方各路由在**同一批 arena prompt** 上的 win_rate）。
+
+> 获取方式（hf-mirror 可达，非 gated、无需账号）：
+> ```bash
+> curl -sSL -o train.parquet \
+>   "https://hf-mirror.com/datasets/routellm/lmsys-arena-human-preference-55k-thresholds/resolve/main/data/train-00000-of-00001.parquet"
+> ```
+
+### 官方各路由的分布（n=57477）
+
+| 路由 | min | p25 | p50 | p75 | max | **std** | **全距** |
+|---|---|---|---|---|---|---|---|
+| bert | 0.0421 | 0.3132 | 0.4066 | 0.4846 | 0.9271 | 0.1515 | 0.8851 |
+| causal_llm | 0.0086 | 0.0528 | 0.0962 | 0.1800 | 0.8340 | 0.1127 | 0.8254 |
+| **sw_ranking** | **0.2090** | **0.2147** | **0.2165** | **0.2183** | **0.2300** | **0.0025** | **0.0210** |
+| mf | 0.0094 | 0.0781 | 0.1159 | 0.1702 | 0.6259 | 0.0773 | 0.6165 |
+
+**官方 sw_ranking 的分布同样极窄（std=0.0025，全距=0.021）** —— 这与 bert/mf
+形成鲜明对比。故「sw_ranking 输出集中在窄区间」**是算法的固有特性，不是缺陷**。
+
+### 但我的实现与官方有系统性偏差
+
+| 项目 | 官方 | 本实现 | 判断 |
+|---|---|---|---|
+| bert mean / std | 0.4058 / 0.1515 | 0.4082 / 0.1500 | ✅ 高度吻合 |
+| sw_ranking mean | **0.2166** | **0.6919** | ❌ 差 3.2 倍 |
+| sw_ranking std | 0.0025 | 0.0008 | ❌ 窄 3 倍 |
+| corr(sw_ranking, bert) | **0.6647** | **0.076** | ❌ 几乎无关 |
+
+**bert 在两边高度吻合** —— 这证明数据链路与测量方法都可靠
+（同一批 prompt、同一个 bert 模型，结果一致）。
+因此 sw_ranking 的 3.2 倍偏差与相关性崩塌是**真实问题**。
+
+### 修正后的结论
+
+前一版将根因归结为「`get_weightings` 动态范围窄」是**不完整的**：
+
+1. **部分成立**：动态范围确实窄（7 倍），全量参与时区分度被压缩
+   （top-K 对照实验仍有效：topK=100 时 elo_diff 全距 87，全量时全距 0）
+2. **但官方同样窄**：官方 std=0.0025 也是极窄区间，说明该特性本身可接受；
+   官方通过 quantile 标定阈值来使用它
+3. **真正的问题在别处**：我的实现与官方相关性只有 0.076（官方 0.66），
+   且绝对值差 3.2 倍 —— 说明**推理链路的输入有系统性差异**
+
+### 最可疑的差异：缺少 gpt4_judge_battles 数据集
+
+官方 sw_ranking 配置为**两个数据集拼接**：
+
+```yaml
+arena_battle_datasets:
+  - lmsys/lmsys-arena-human-preference-55k      # ← 本实现只用了这个
+  - routellm/gpt4_judge_battles                 # ← 缺失
+arena_embedding_datasets:
+  - routellm/arena_battles_embeddings           # ← 本实现只用了这个
+  - routellm/gpt4_judge_battles_embeddings      # ← 缺失
+```
+
+`gpt4_judge_battles` 是用 GPT-4 判定补充的对战数据，会显著改变 Elo 分的估计。
+而 win_rate 完全由 `elo_strong - elo_weak` 决定，少这批数据会导致估计偏差。
+
+**这是下一步最应验证的方向**（未验证）。
+
+### 官方阈值标定参考值
+
+按官方 `calibrate_threshold.py` 的 quantile 方法，在官方数据上：
+
+| 目标强模型占比 | 官方 sw_ranking 阈值 |
+|---|---|
+| 50% | 0.216473 |
+| 30% | 0.217959 |
+| 20% | 0.218800 |
+| 10% | 0.219952 |
+| 5% | 0.220915 |
+
+注：从 50% 到 5%，阈值仅从 0.216473 变到 0.220915（差 0.0044）——
+这印证了官方 sw_ranking 的分布确实极窄，**其阈值必须高精度标定**，
+不能沿用 bert 的阈值（0.4~0.6 量级）。
+
+## 候选修复（在新结论下重新定位）
+
+**注意**：在拿到官方数据后，本节的定位已变化 —— 这些映射改动能把 win_rate
+拉开，但官方 sw_ranking 本身就是窄分布设计。故**不应擅自拉大动态范围**
+（那会偏离上游算法语义）。除非能证明：拉大动态范围后 benchmark 准确率更高。
+
+保留本节作为「若确实需要改动时」的候选方案参考。
 
 把权重动态范围拉大，区分度即可恢复，且**方向正确**：
 
