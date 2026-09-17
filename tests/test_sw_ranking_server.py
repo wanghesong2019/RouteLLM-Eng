@@ -74,12 +74,31 @@ def test_routes_registered():
 
 
 def _config():
-    """构造服务所需的三个路径配置。"""
+    """构造服务所需的路径配置。
+
+    judge 数据可选：提供时走官方完整配置（arena + judge 拼接），
+    未提供时仅 arena（会与官方有系统偏差，仅供链路测试）。
+    """
     return {
         "model_path": BGE_M3_PATH,
         "battles_csv": os.environ.get("ROUTELLM_ARENA_CSV", ""),
         "embeddings_npy": os.environ.get("ROUTELLM_ARENA_EMBEDDINGS", ""),
+        "judge_parquet": os.environ.get("ROUTELLM_JUDGE_PARQUET") or None,
+        "judge_embeddings": os.environ.get("ROUTELLM_JUDGE_EMBEDDINGS") or None,
     }
+
+
+def _load(cfg):
+    """按配置加载（含可选 judge 数据集）。"""
+    from services.sw_ranking_server import load_router
+
+    load_router(
+        cfg["model_path"],
+        cfg["battles_csv"],
+        cfg["embeddings_npy"],
+        judge_parquet=cfg["judge_parquet"],
+        judge_embeddings=cfg["judge_embeddings"],
+    )
 
 
 needs_real = pytest.mark.skipif(
@@ -91,10 +110,10 @@ needs_real = pytest.mark.skipif(
 @needs_real
 def test_load_and_score():
     """加载真实数据后，score 应返回 [0,1] 的 win_rate。"""
-    from services.sw_ranking_server import load_router, score_batch
+    from services.sw_ranking_server import score_batch
 
     cfg = _config()
-    load_router(cfg["model_path"], cfg["battles_csv"], cfg["embeddings_npy"])
+    _load(cfg)
 
     results = score_batch(["What is the capital of France?"], return_detail=False)
     assert len(results) == 1
@@ -105,10 +124,10 @@ def test_load_and_score():
 @needs_real
 def test_batch_scoring():
     """batch 应一次处理多条，条数与输入一致。"""
-    from services.sw_ranking_server import load_router, score_batch
+    from services.sw_ranking_server import score_batch
 
     cfg = _config()
-    load_router(cfg["model_path"], cfg["battles_csv"], cfg["embeddings_npy"])
+    _load(cfg)
 
     prompts = [f"Test prompt number {i}, reasonably long for encoding." for i in range(5)]
     results = score_batch(prompts, return_detail=False)
@@ -119,10 +138,10 @@ def test_batch_scoring():
 @needs_real
 def test_deterministic():
     """同一 prompt 多次调用结果须一致（服务不得引入随机性）。"""
-    from services.sw_ranking_server import load_router, score_batch
+    from services.sw_ranking_server import score_batch
 
     cfg = _config()
-    load_router(cfg["model_path"], cfg["battles_csv"], cfg["embeddings_npy"])
+    _load(cfg)
 
     p = "Explain the trade-offs between consistency and availability."
     vals = [score_batch([p], return_detail=False)[0]["win_rate"] for _ in range(3)]
@@ -132,16 +151,20 @@ def test_deterministic():
 @needs_real
 def test_health_reports_loaded():
     """加载后 /health 应报告 model_loaded=True 与数据规模。"""
-    from services.sw_ranking_server import health, load_router
+    from services.sw_ranking_server import health
 
     cfg = _config()
-    load_router(cfg["model_path"], cfg["battles_csv"], cfg["embeddings_npy"])
+    _load(cfg)
 
     h = health()
     assert h["status"] == "online"
     assert h["model_loaded"] is True
-    assert h["rows"] == 55361, f"arena 行数应为 55361，实际 {h.get('rows')}"
     assert h["dimension"] == 1024
+    # 数据规模：仅 arena 时 55361；含 judge 时 164462
+    assert h["rows"] in (55361, 164462), f"意外的行数 {h['rows']}"
+    if h["rows"] == 164462:
+        names = [d["name"] for d in h.get("datasets", [])]
+        assert names == ["arena", "judge"], f"datasets 应为 arena+judge，实际 {names}"
 
 
 @needs_real
@@ -164,10 +187,10 @@ def test_not_loaded_raises_503():
 @needs_real
 def test_selfcheck_has_baseline():
     """/selfcheck 应返回固定 probe 与其 win_rate（可跨版本比对一致性）。"""
-    from services.sw_ranking_server import load_router, selfcheck
+    from services.sw_ranking_server import selfcheck
 
     cfg = _config()
-    load_router(cfg["model_path"], cfg["battles_csv"], cfg["embeddings_npy"])
+    _load(cfg)
 
     sc = selfcheck()
     assert "probe" in sc and "win_rate" in sc

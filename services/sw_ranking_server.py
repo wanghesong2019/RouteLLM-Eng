@@ -219,15 +219,29 @@ def compute_tiers(model_ratings: pd.Series, num_tiers: int) -> Dict[Any, int]:
 # ---------------------------------------------------------------------------
 # 模型 / 数据加载
 # ---------------------------------------------------------------------------
-def load_router(model_path: str, battles_csv: str, embeddings_npy: str) -> None:
-    """加载 bge-m3 + arena 数据，并预计算 Elo 分档。"""
+def load_router(
+    model_path: str,
+    battles_csv: str,
+    embeddings_npy: str,
+    judge_parquet: Optional[str] = None,
+    judge_embeddings: Optional[str] = None,
+) -> None:
+    """加载 bge-m3 + arena 数据（可选拼接 judge 数据集），并预计算 Elo 分档。
+
+    官方 sw_ranking 拼接两个数据集：
+        arena (lmsys/...) + judge (routellm/gpt4_judge_battles)
+    只接 arena 会与官方产生系统偏差（实测 mean 0.692 vs 0.216），
+    因此生产环境应同时提供 judge_parquet 与 judge_embeddings。
+    """
     global EMBEDDER, ARENA_DF, ARENA_EMB, MODEL2TIER, CONFIG, START_TS
 
-    for label, p in (
-        ("bge-m3 权重", model_path),
-        ("arena CSV", battles_csv),
-        ("arena 向量", embeddings_npy),
-    ):
+    paths = [("bge-m3 权重", model_path), ("arena CSV", battles_csv),
+             ("arena 向量", embeddings_npy)]
+    if judge_parquet:
+        paths.append(("judge parquet", judge_parquet))
+    if judge_embeddings:
+        paths.append(("judge 向量", judge_embeddings))
+    for label, p in paths:
         if not os.path.exists(p):
             raise FileNotFoundError(f"{label} 不存在: {p}")
 
@@ -245,11 +259,26 @@ def load_router(model_path: str, battles_csv: str, embeddings_npy: str) -> None:
     logger.info("加载 arena 数据: %s", battles_csv)
     arena_df = preprocess_battles(pd.read_csv(battles_csv))
     arena_emb = np.load(embeddings_npy).astype(np.float32)
-
     if len(arena_df) != len(arena_emb):
         raise ValueError(
-            f"向量条数 {len(arena_emb)} 与 battle 行数 {len(arena_df)} 不一致"
+            f"arena 向量条数 {len(arena_emb)} 与 battle 行数 {len(arena_df)} 不一致"
         )
+
+    datasets_info = [{"name": "arena", "rows": int(len(arena_df))}]
+
+    # 拼接 judge 数据集（官方配置的第二部分）
+    if judge_parquet and judge_embeddings:
+        logger.info("加载 judge 数据: %s", judge_parquet)
+        judge_df = preprocess_battles(pd.read_parquet(judge_parquet))
+        judge_emb = np.load(judge_embeddings).astype(np.float32)
+        if len(judge_df) != len(judge_emb):
+            raise ValueError(
+                f"judge 向量条数 {len(judge_emb)} 与 battle 行数 {len(judge_df)} 不一致"
+            )
+        logger.info("拼接: arena %d + judge %d", len(arena_df), len(judge_df))
+        arena_df = pd.concat([arena_df, judge_df], ignore_index=True)
+        arena_emb = np.concatenate([arena_emb, judge_emb], axis=0)
+        datasets_info.append({"name": "judge", "rows": int(len(judge_df))})
 
     logger.info("计算 Elo 分档（%s 条）", len(arena_df))
     model_ratings = compute_elo_mle_with_tie(arena_df)
@@ -272,6 +301,7 @@ def load_router(model_path: str, battles_csv: str, embeddings_npy: str) -> None:
         "device": device,
         "rows": int(len(arena_df)),
         "dimension": int(arena_emb.shape[1]),
+        "datasets": datasets_info,
         "num_tiers": NUM_TIERS,
         "strong_model": STRONG_MODEL,
         "weak_model": WEAK_MODEL,
@@ -413,6 +443,10 @@ def main() -> None:
     ap.add_argument("--model-path", required=True, help="bge-m3 权重目录")
     ap.add_argument("--battles-csv", required=True, help="arena battle CSV")
     ap.add_argument("--embeddings", required=True, help="arena 向量 .npy")
+    ap.add_argument("--judge-parquet", default=None,
+                    help="gpt4_judge_battles parquet（官方配置的第二数据集，建议提供）")
+    ap.add_argument("--judge-embeddings", default=None,
+                    help="gpt4_judge_battles 向量 .npy（与 --judge-parquet 配对）")
     ap.add_argument("--port", type=int, default=6071)
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--gpu", type=int, default=None, help="指定 GPU 序号")
@@ -421,7 +455,19 @@ def main() -> None:
     if args.gpu is not None:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
-    load_router(args.model_path, args.battles_csv, args.embeddings)
+    if bool(args.judge_parquet) != bool(args.judge_embeddings):
+        raise SystemExit(
+            "--judge-parquet 与 --judge-embeddings 须成对提供（两者缺一会导致"
+            "只接入部分数据集，与官方产生系统偏差）"
+        )
+
+    load_router(
+        args.model_path,
+        args.battles_csv,
+        args.embeddings,
+        judge_parquet=args.judge_parquet,
+        judge_embeddings=args.judge_embeddings,
+    )
     logger.info("starting server on %s:%s", args.host, args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
