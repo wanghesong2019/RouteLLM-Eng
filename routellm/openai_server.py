@@ -63,6 +63,7 @@ async def lifespan(app):
         api_base=SETTINGS.api_base,
         api_key=SETTINGS.api_key,
         progress_bar=True,
+        config_store=_CONFIG_STORE,  # 注入后支持运行时热更新（方案文档 4.8）
     )
     yield
     CONTROLLER = None
@@ -97,6 +98,16 @@ def _inject_inference_url(config, settings):
 # 指标采集上下文。用 ContextVar 而非全局 dict —— 网关处理并发请求时，
 # 全局 dict 会被多个请求互相覆盖，导致指标串台。ContextVar 天然按协程隔离。
 _METRICS_CTX: contextvars.ContextVar = contextvars.ContextVar("routellm_metrics", default=None)
+
+# 运行时配置存储（方案文档 4.8 —— 配置热更新）。
+# 在模块级创建（lifespan 之前），因为 lifespan 里构造 Controller 时要用到。
+# 优先读 ROUTELLM_RUNTIME_CONFIG 指定的 JSON，回落环境变量。
+try:
+    from routellm.config_runtime.store import RuntimeConfigStore as _RuntimeConfigStore
+
+    _CONFIG_STORE = _RuntimeConfigStore()
+except Exception as _e:  # noqa: BLE001
+    _CONFIG_STORE = None
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
@@ -149,6 +160,19 @@ if _METRICS_ENABLED:
 
         # 网关端口也挂面板路由（便利性；外部访问请用独立的 dashboard 容器）
         app.include_router(_dashboard_router)
+
+        # 配置编辑 API（方案文档 4.8）—— Dashboard 通过它转发编辑请求
+        try:
+            if _CONFIG_STORE is None:
+                raise RuntimeError("运行时配置存储未初始化")
+            from routellm.config_runtime import api as _config_api
+
+            _config_api.set_store(_CONFIG_STORE)
+            app.include_router(_config_api.router)
+            logging.info("配置热更新 API 已挂载: /api/config")
+        except Exception as _ce:  # noqa: BLE001
+            logging.warning("配置 API 挂载失败: %s", _ce)
+
         # 中间件需在 app 创建后添加；ctx_var 用本模块的 _METRICS_CTX
         app.add_middleware(_MetricsMiddleware, store=_METRICS_STORE, ctx_var=_METRICS_CTX)
 

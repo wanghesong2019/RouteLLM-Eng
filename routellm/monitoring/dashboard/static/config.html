@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>RouteLLM 配置 · 运行时热更新</title>
+<style>
+  :root {
+    --bg:#0f1117; --card:#1a1d26; --border:#2a2f3a; --fg:#e6e8ee;
+    --dim:#8b93a7; --accent:#4d9fff; --ok:#4dd4a0; --warn:#ffc857; --err:#ff7a59;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.6 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 24px; border-bottom:1px solid var(--border);
+  }
+  h1 { font-size:18px; margin:0; font-weight:600; }
+  h1 span { color:var(--accent); }
+  .tabs { display:flex; gap:8px; }
+  .tabs a {
+    color:var(--dim); text-decoration:none; padding:6px 14px;
+    border:1px solid var(--border); border-radius:6px; font-size:13px;
+  }
+  .tabs a.active { color:var(--accent); border-color:var(--accent); }
+  .tabs a:hover { color:var(--fg); }
+  main { padding:24px; max-width:900px; }
+  .banner {
+    padding:12px 16px; border-radius:8px; margin-bottom:20px;
+    border:1px solid var(--border); background:var(--card); font-size:13px;
+  }
+  .banner.ok   { border-color:var(--ok);   color:var(--ok); }
+  .banner.err  { border-color:var(--err);  color:var(--err); }
+  .banner.warn { border-color:var(--warn); color:var(--warn); }
+  .banner code { color:var(--fg); background:#0b0d12; padding:2px 6px; border-radius:4px; }
+  fieldset {
+    border:1px solid var(--border); border-radius:10px; background:var(--card);
+    padding:18px; margin:0 0 18px;
+  }
+  legend { color:var(--dim); font-size:13px; padding:0 8px; }
+  .row { display:grid; grid-template-columns:150px 1fr; gap:12px; align-items:center; margin-bottom:12px; }
+  .row label { color:var(--dim); font-size:13px; }
+  .row input {
+    width:100%; padding:8px 12px; background:#0b0d12; color:var(--fg);
+    border:1px solid var(--border); border-radius:6px; font-size:13px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+  }
+  .row input:focus { outline:none; border-color:var(--accent); }
+  .row .hint { grid-column:2; color:var(--dim); font-size:11px; margin-top:-6px; }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button {
+    padding:9px 18px; border-radius:6px; cursor:pointer; font-size:13px;
+    border:1px solid var(--border); background:var(--card); color:var(--fg);
+  }
+  button:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#04121f; font-weight:600; }
+  button.primary:hover:not(:disabled) { opacity:.88; color:#04121f; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .meta { color:var(--dim); font-size:12px; margin-top:14px; }
+  .spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--border);
+             border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .ro { color:var(--dim); font-size:12px; }
+  .changed { color:var(--ok); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RouteLLM <span>配置</span></h1>
+  <div class="tabs">
+    <a href="/dashboard">监控面板</a>
+    <a href="/config" class="active">运行时配置</a>
+  </div>
+</header>
+
+<main>
+  <div id="banner" class="banner">
+    正在加载当前配置… <span class="spinner"></span>
+  </div>
+
+  <form id="cfg-form" onsubmit="return false;">
+    <fieldset>
+      <legend>强模型（复杂问题走这里）</legend>
+      <div class="row">
+        <label for="s_model">模型名</label>
+        <input id="s_model" name="strong_model" placeholder="openai/deepseek-ai/DeepSeek-V4-Pro">
+      </div>
+      <div class="row">
+        <label for="api_base">API Base URL</label>
+        <input id="api_base" name="api_base" placeholder="https://api.siliconflow.cn/v1">
+      </div>
+      <div class="row">
+        <label for="api_key">API Key</label>
+        <input id="api_key" name="api_key" placeholder="留空 = 不修改">
+        <div class="hint">当前值以掩码显示；留空提交表示保持原值不变</div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>弱模型（简单问题走这里）</legend>
+      <div class="row">
+        <label for="w_model">模型名</label>
+        <input id="w_model" name="weak_model" placeholder="openai/deepseek-ai/DeepSeek-V4-Flash">
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>只读项（改动需重启网关）</legend>
+      <div class="ro">
+        路由器类型（remote_bert 等）、路由阈值、路由模型路径 —— 这些变更涉及
+        加载模型与数据集，不支持热更新。<br>
+        面板端口 / metrics 路径等由容器环境变量控制。
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button class="primary" id="btn-save" onclick="save()">保存并立即生效</button>
+      <button id="btn-verify" onclick="verify()">测试连接</button>
+      <button id="btn-reload" onclick="load()">重新加载</button>
+      <span id="status"></span>
+    </div>
+
+    <div class="meta" id="meta"></div>
+  </form>
+</main>
+
+<script>
+let CURRENT = {};   // 服务端返回的配置（api_key 为掩码）
+
+function setBanner(kind, html) {
+  const b = document.getElementById('banner');
+  b.className = 'banner' + (kind ? ' ' + kind : '');
+  b.innerHTML = html;
+}
+
+function setStatus(html, kind) {
+  const s = document.getElementById('status');
+  s.innerHTML = html;
+  s.style.color = kind === 'err' ? 'var(--err)' : kind === 'ok' ? 'var(--ok)' : 'var(--dim)';
+}
+
+async function load() {
+  setBanner('', '正在加载当前配置… <span class="spinner"></span>');
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+
+    if (d.proxy_error) {
+      setBanner('err',
+        '<b>无法读取配置</b><br>' + d.proxy_error +
+        (d.proxy_hint ? '<br><span class="ro">' + d.proxy_hint + '</span>' : ''));
+      return;
+    }
+
+    CURRENT = d;
+    document.getElementById('s_model').value  = d.strong_model || '';
+    document.getElementById('w_model').value  = d.weak_model || '';
+    document.getElementById('api_base').value = d.api_base || '';
+    // api_key 用掩码作 placeholder，输入框留空表示不修改
+    document.getElementById('api_key').value = '';
+    document.getElementById('api_key').placeholder = d.api_key || '留空 = 不修改';
+
+    setBanner('ok', '配置已加载 · <b>修改后点击「保存」立即生效，无需重启网关</b>');
+    document.getElementById('meta').textContent =
+      '可编辑字段: ' + (d.editable_fields || []).join(', ');
+  } catch (e) {
+    setBanner('err', '<b>加载失败</b>: ' + e.message);
+  }
+}
+
+function payload() {
+  const p = {};
+  const s = document.getElementById('s_model').value.trim();
+  const w = document.getElementById('w_model').value.trim();
+  const b = document.getElementById('api_base').value.trim();
+  const k = document.getElementById('api_key').value.trim();
+
+  // 只提交有变化的字段；api_key 留空表示不修改
+  if (s && s !== CURRENT.strong_model) p.strong_model = s;
+  if (w && w !== CURRENT.weak_model) p.weak_model = w;
+  if (b && b !== CURRENT.api_base) p.api_base = b;
+  if (k) p.api_key = k;
+  return p;
+}
+
+async function save() {
+  const p = payload();
+  if (Object.keys(p).length === 0) {
+    setStatus('没有需要提交的变更', '');
+    return;
+  }
+  const btn = document.getElementById('btn-save');
+  btn.disabled = true;
+  setStatus('提交中… <span class="spinner"></span>', '');
+  try {
+    const r = await fetch('/api/config', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(p),
+    });
+    const d = await r.json();
+
+    if (d.proxy_error) {
+      setStatus('失败: ' + d.proxy_error, 'err');
+      return;
+    }
+    if (d.ok === false) {
+      setStatus('未生效: ' + (d.message || '未知原因'), 'err');
+      return;
+    }
+    const ch = (d.changed || []).join(', ');
+    setStatus('已生效: ' + (ch || '无变化') + '（无需重启）', 'ok');
+    await load();
+  } catch (e) {
+    setStatus('提交失败: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function verify() {
+  const btn = document.getElementById('btn-verify');
+  btn.disabled = true;
+  setStatus('测试中… <span class="spinner"></span>', '');
+  try {
+    const r = await fetch('/api/config/verify', {method: 'POST'});
+    const d = await r.json();
+    if (d.proxy_error) {
+      setStatus('转发失败: ' + d.proxy_error, 'err');
+      return;
+    }
+    if (d.ok) {
+      setStatus('下游可达 · ' + (d.detail || ''), 'ok');
+    } else {
+      setStatus('下游不可达 · ' + (d.detail || ''), 'err');
+    }
+  } catch (e) {
+    setStatus('测试失败: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+load();
+</script>
+</body>
+</html>

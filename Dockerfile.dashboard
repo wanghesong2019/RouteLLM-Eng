@@ -13,12 +13,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 面板最小依赖集：FastAPI + uvicorn 即可
+# 面板最小依赖集：FastAPI + uvicorn + httpx（配置转发用）
 # 不用 requirements-gateway.txt（那含 litellm/pandas/sklearn 等网关依赖）
 RUN pip install --no-cache-dir \
     "fastapi>=0.110" \
     "uvicorn[standard]>=0.27" \
-    "pydantic>=2.0"
+    "pydantic>=2.0" \
+    "httpx>=0.27"
 
 # 只复制面板所需代码 —— 不复制网关模块，保持镜像小
 COPY routellm/__init__.py /app/routellm/__init__.py

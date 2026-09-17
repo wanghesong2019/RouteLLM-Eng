@@ -85,6 +85,47 @@ class Controller:
         """
         return get_routing_info()
 
+    # ------------------------------------------------------------------
+    # 运行时配置热更新（方案文档 4.8）
+    #
+    # 改造前：model_pair / api_base / api_key 在 __init__ 时固化。
+    # 改造后：注入 config_store 时**按请求现取** —— 改配置无需重启即生效。
+    #
+    # 为何读操作无需加锁：RuntimeConfigStore 持不可变配置对象，update()
+    # 是"整体换对象"而非就地修改，故读取方拿到的一定是完整一致的快照。
+    # ------------------------------------------------------------------
+
+    def live_config(self):
+        """取当前生效的配置（热更新后即为新值）。
+
+        未注入 config_store 时，用构造参数构造等价对象返回（向后兼容）。
+        """
+        if self.config_store is not None:
+            return self.config_store.load()
+
+        from routellm.config_runtime.store import RuntimeConfig
+
+        return RuntimeConfig(
+            strong_model=self.model_pair.strong,
+            weak_model=self.model_pair.weak,
+            api_base=self.api_base or "",
+            api_key=self.api_key or "",
+        )
+
+    def live_model_pair(self):
+        """取当前生效的强弱模型对（供路由决策与上报使用）。"""
+        cfg = self.live_config()
+        return ModelPair(strong=cfg.strong_model, weak=cfg.weak_model)
+
+    def downstream_kwargs(self, model: str) -> dict:
+        """构造下游 litellm 调用参数（base_url / api_key 按当前配置现取）。"""
+        cfg = self.live_config()
+        return {
+            "model": model,
+            "api_base": cfg.api_base or None,
+            "api_key": cfg.api_key or None,
+        }
+
     def __init__(
         self,
         routers: list[str],
@@ -94,6 +135,7 @@ class Controller:
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         progress_bar: bool = False,
+        config_store: Optional[Any] = None,
     ):
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
@@ -101,6 +143,10 @@ class Controller:
         self.api_key = api_key
         self.model_counts = defaultdict(lambda: defaultdict(int))
         self.progress_bar = progress_bar
+        # 运行时配置存储（可选）。注入后，下游 LLM 的 base_url / api_key /
+        # 模型名将**按请求现取**，从而支持不重启热更新（方案文档 4.8）。
+        # 未注入时回落到构造参数，行为与改造前一致（向后兼容）。
+        self.config_store = config_store
 
         if config is None:
             config = GPT_4_AUGMENTED_CONFIG
@@ -156,6 +202,8 @@ class Controller:
         import time as _time
 
         prompt = messages[-1]["content"]
+        # 用 live 配置取强弱模型（支持运行时热更新模型名）
+        live_pair = self.live_model_pair()
 
         t0 = _time.perf_counter()
         router_instance = self.routers[router]
@@ -164,11 +212,11 @@ class Controller:
         try:
             win_rate = float(router_instance.calculate_strong_win_rate(prompt))
             routed_model = (
-                self.model_pair.strong if win_rate >= threshold else self.model_pair.weak
+                live_pair.strong if win_rate >= threshold else live_pair.weak
             )
         except Exception:  # noqa: BLE001
             # 路由失败时回落到原接口（保持既有容错行为）
-            routed_model = router_instance.route(prompt, threshold, self.model_pair)
+            routed_model = router_instance.route(prompt, threshold, live_pair)
             win_rate = 0.0
         latency_ms = (_time.perf_counter() - t0) * 1000
 
@@ -181,7 +229,7 @@ class Controller:
                 threshold=float(threshold),
                 win_rate=win_rate,
                 routed_model=(
-                    "strong" if routed_model == self.model_pair.strong else "weak"
+                    "strong" if routed_model == live_pair.strong else "weak"
                 ),
                 latency_ms=round(latency_ms, 3),
             )
@@ -225,7 +273,10 @@ class Controller:
         kwargs["model"] = self._get_routed_model_for_completion(
             kwargs["messages"], router, threshold
         )
-        return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        # 用 live 配置构造下游参数 —— 支持运行时热更新（方案文档 4.8）
+        kw = self.downstream_kwargs(kwargs["model"])
+        kwargs.pop("model")
+        return completion(**kw, **kwargs)
 
     # Matches OpenAI's Async Chat Completions interface, but also supports optional router and threshold args
     async def acompletion(
@@ -242,4 +293,7 @@ class Controller:
         kwargs["model"] = self._get_routed_model_for_completion(
             kwargs["messages"], router, threshold
         )
-        return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        # 用 live 配置构造下游参数 —— 支持运行时热更新（方案文档 4.8）
+        kw = self.downstream_kwargs(kwargs["model"])
+        kwargs.pop("model")
+        return await acompletion(**kw, **kwargs)

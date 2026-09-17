@@ -123,6 +123,22 @@ async def dashboard_page() -> HTMLResponse:
     return HTMLResponse(html)
 
 
+@router.get("/config", response_class=HTMLResponse)
+async def config_page() -> HTMLResponse:
+    """配置编辑页（运行时配置热更新，方案文档 4.8）。
+
+    这是独立页面（而非塞进 index.html）—— 配置编辑与监控展示是两种
+    不同的操作场景，分开更清晰，也便于单独鉴权/审计。
+    """
+    p = os.path.join(STATIC_DIR, "config.html")
+    if not os.path.exists(p):
+        return HTMLResponse(
+            "<h1>配置页静态文件缺失</h1><p>期望: " + p + "</p>", status_code=500
+        )
+    with open(p, encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+
 # --------------------------------------------------------------------------- API
 
 
@@ -189,6 +205,15 @@ def create_dashboard_only_app() -> FastAPI:
         version="0.1.0",
     )
     app.include_router(router)
+
+    # 配置转发路由（方案文档 4.8）—— 把编辑请求转发到网关
+    try:
+        from routellm.monitoring.dashboard.config_proxy import router as _cfg_router
+
+        app.include_router(_cfg_router)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("配置转发路由挂载失败: %s", e)
+
     return app
 
 

@@ -19,6 +19,7 @@
 | 2026-09-17 | [多级缓存层（P0）](2026-09-17-multi-tier-cache.md) | ✅ 通过 | 缓存 **win_rate 结果**（而非仅 embedding，因实测 Elo 回归占 90%）；**miss 290~600ms → hit 0.02~0.05ms（快约 4 个数量级）**；支持多级编排、回填、故障降级 |
 | 2026-09-17 | [监控体系 + Dashboard（P0）](2026-09-17-monitoring-dashboard.md) | ✅ 通过 | 自研 Dashboard（ECharts 单页）+ Prometheus 端点；指标落 **SQLite**（解决原实现「重启丢失」）；端到端验证含 win_rate 与路由延迟采集 |
 | 2026-09-17 | [网关鉴权 + Dashboard 独立容器 + compose 部署](2026-09-17-gateway-auth-and-compose.md) | ✅ 通过 | 双容器 compose（网关 6060 需 Bearer key / 面板 8092 免鉴权）；**鉴权中间件曾拦截 lifespan scope 致业务全 500**（已修 + 加守护测试） |
+| 2026-09-17 | [运行时配置热更新（Phase 3.5）](2026-09-17-runtime-config-hot-reload.md) | ✅ 通过 | 强弱模型 base_url/api_key/模型名可经前端编辑**零重启立即生效**（方案B：配置存网关，面板转发）；不可变对象原子替换保证并发一致；掩码回显 + 审计 |
 
 ## 结论摘要（供快速引用）
 
