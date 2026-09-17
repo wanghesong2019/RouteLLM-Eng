@@ -16,6 +16,8 @@
 | `verify_bert_discrimination.py` | 在 GSM8K / MMLU 真实数据上验证 win rate 区分度 |
 | `build_arena_embeddings.py` | 用本地 bge-m3 生成 arena 55361 条 prompt 向量（替代 OpenAI Embedding API） |
 | `verify_sw_ranking_local.py` | 验证 SWRankingRouter 本地化改造：本地数据+bge-m3 端到端、无 HF/OpenAI 依赖、确定性、延迟 |
+| `profile_sw_ranking_latency.py` | 拆解路由延迟构成，定位瓶颈阶段（编码/点积/Elo 回归） |
+| `bench_elo_solvers.py` | 对比 elo 回归各求解器的耗时与结果一致性 |
 
 ## 用法
 

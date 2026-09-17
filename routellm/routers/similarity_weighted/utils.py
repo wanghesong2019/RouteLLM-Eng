@@ -80,8 +80,20 @@ def compute_tiers(model_ratings, num_tiers):
 
 
 def compute_elo_mle_with_tie(
-    df, SCALE=400, BASE=10, INIT_RATING=1000, sample_weight=None
+    df, SCALE=400, BASE=10, INIT_RATING=1000, sample_weight=None, solver=None
 ):
+    """用带平局的 Bradley-Terry 模型（逻辑回归）估计 elo 分。
+
+    Args:
+        solver: sklearn LogisticRegression 的求解器。默认 None 表示用
+            "newton-cholesky" —— 本数据形状（样本 11 万、特征仅 10 个模型）
+            下比默认 lbfgs 快约 5 倍，elo 偏差 <1 分。需要精确复现历史
+            结果时可显式传 "lbfgs"。
+
+    性能说明（实测，110722x10）：
+        lbfgs           : ~308 ms
+        newton-cholesky : ~57 ms   （默认）
+    """
     models = pd.concat([df["model_a"], df["model_b"]]).unique()
     models = pd.Series(np.arange(len(models)), index=models)
 
@@ -104,7 +116,11 @@ def compute_elo_mle_with_tie(
     tie_idx[len(tie_idx) // 2 :] = False
     Y[tie_idx] = 1.0
 
-    lr = LogisticRegression(fit_intercept=False, penalty=None)
+    # newton-cholesky 专为 n_samples >> n_features 设计：Hessian 是 p×p 小矩阵
+    # （此处 10x10），每轮迭代成本远低于 lbfgs 的全量梯度扫描。
+    if solver is None:
+        solver = "newton-cholesky"
+    lr = LogisticRegression(fit_intercept=False, penalty=None, solver=solver)
     if sample_weight is not None:
         sample_weight = np.concatenate([sample_weight, sample_weight])
         lr.fit(X, Y, sample_weight=sample_weight)
