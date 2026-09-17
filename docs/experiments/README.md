@@ -14,6 +14,7 @@
 | 2026-09-17 | [镜像重建与容器切换](2026-09-17-image-rebuild-container-switch.md) | ✅ 通过 | 新代码上线无回归（镜像 675→704MB，仍未装 torch）；**关键发现：真实网关中路由开销占比 <5%，下游 LLM 生成占 1.7~16s** |
 | 2026-09-17 | [sw_ranking 服务化上线](2026-09-17-sw-ranking-service-deployment.md) | ⚠️ 部分 | 链路打通：6071 host 服务 + 容器启用 `remote_sw_ranking`（零挂载保持轻量）；**但发现 win_rate 全挤在 0.689~0.693，0.5 阈值下永远走强模型**（bert 对比有正常区分度 0.297~0.453）→ 待查 |
 | 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ✅ 已修复 | **根因：只接了 arena 未接 gpt4_judge_battles 数据集**（官方需拼接两个）；补齐后 mean 0.2148 vs 官方 0.2166（**均值比 0.9914**），逐条相关 **0.8052**（修复前 0.076） |
+| 2026-09-17 | [sw_ranking 阈值标定与路由选型建议](2026-09-17-sw-ranking-threshold-calibration.md) | ✅ 决策 | 阈值须用 quantile 标定（官方方法），50% 占比 → 0.2165；**逐 prompt 对比发现 sw_ranking 是「配额分配」而非「难度判断」**（跨度 0.007 vs bert 0.30）→ **生产默认用 `remote_bert`** |
 
 ## 结论摘要（供快速引用）
 
@@ -79,6 +80,30 @@ compute_elo_mle_with_tie        355.5ms   90.1%   ← 瓶颈
 **数据获取方式**（两者均可经 hf-mirror 直接 curl，非 gated）：
 - thresholds: `routellm/lmsys-arena-human-preference-55k-thresholds`（2.1MB）
 - judge battles: `routellm/gpt4_judge_battles`（159MB，parquet）
+
+### 路由选型结论（2026-09-17 决策）
+
+**生产默认用 `remote_bert`，`remote_sw_ranking` 保留为可选。**
+
+| | bert | sw_ranking |
+|---|---|---|
+| 机制 | 分类模型判别 prompt 难度 | 相似度加权 Elo 回归 |
+| 输出语义 | **单请求难度**评分 | **配额分配**（按分位数切分） |
+| 分布跨度 | 0.30+（0.172~0.472） | <0.01（0.2099~0.2167） |
+| 阈值鲁棒性 | 0.5 有明确含义，容错大 | 容错仅 0.0035，部署风险高 |
+| 难度感知 | ✅ 正确（难题→高值） | ❌ 排序无意义 |
+
+sw_ranking 的 win_rate 阈值须用官方 quantile 方法标定
+（`threshold = quantile(1 - strong_pct)`），实测：
+
+| 目标强模型占比 | 阈值 |
+|---|---|
+| 50% | 0.2165 |
+| 20% | 0.2188 |
+| 10% | 0.2200 |
+
+**注意**：sw_ranking 阈值绝不可沿用 bert 的 0.4~0.6 量级 ——
+分布位置完全不同（这曾是本地化初期"永远走强模型"的原因）。
 
 ### 环境版本（43 号机 rag-dev 环境）
 
