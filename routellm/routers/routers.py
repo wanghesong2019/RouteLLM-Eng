@@ -198,24 +198,34 @@ class SWRankingRouter(Router):
         local_battles_csv=None,
         local_embeddings_npy=None,
         local_embedder_path=None,
+        # ---- 多数据集拼接（对应官方的 arena + gpt4_judge_battles）----
+        # 每项形如 {"battles": <csv/parquet>, "embeddings": <npy>, "count": <可选>}
+        # 拼接顺序须两边一致；per-dataset 行数校验可拦截错配。
+        local_datasets=None,
     ):
         self.strong_model = strong_model
         self.weak_model = weak_model
 
-        use_local_data = local_battles_csv is not None or local_embeddings_npy is not None
-        if use_local_data:
-            if local_battles_csv is None or local_embeddings_npy is None:
-                raise ValueError(
-                    "本地数据模式需同时提供 local_battles_csv 与 local_embeddings_npy；"
-                    f"当前收到 battles={local_battles_csv!r}, embeddings={local_embeddings_npy!r}"
-                )
-            self.arena_df, self.arena_conv_embedding = self._load_local_data(
-                local_battles_csv, local_embeddings_npy
+        if local_datasets is not None:
+            self.arena_df, self.arena_conv_embedding = self._load_multi_datasets(
+                local_datasets
             )
+            use_local_data = True
         else:
-            self.arena_df, self.arena_conv_embedding = self._load_remote_data(
-                arena_battle_datasets, arena_embedding_datasets
-            )
+            use_local_data = local_battles_csv is not None or local_embeddings_npy is not None
+            if use_local_data:
+                if local_battles_csv is None or local_embeddings_npy is None:
+                    raise ValueError(
+                        "本地数据模式需同时提供 local_battles_csv 与 local_embeddings_npy；"
+                        f"当前收到 battles={local_battles_csv!r}, embeddings={local_embeddings_npy!r}"
+                    )
+                self.arena_df, self.arena_conv_embedding = self._load_local_data(
+                    local_battles_csv, local_embeddings_npy
+                )
+            else:
+                self.arena_df, self.arena_conv_embedding = self._load_remote_data(
+                    arena_battle_datasets, arena_embedding_datasets
+                )
 
         # prompt 编码器：本地 bge-m3 优先，否则回落 OpenAI Embedding API。
         # 注意 embedding_model 需分别表达两件事：
@@ -254,6 +264,81 @@ class SWRankingRouter(Router):
         )
 
     # ------------------------------------------------------------ 数据加载
+
+    @staticmethod
+    def _load_multi_datasets(datasets):
+        """拼接多个本地数据集（对应官方的 arena + gpt4_judge_battles）。
+
+        官方 sw_ranking 拼接两个数据集：
+            lmsys/lmsys-arena-human-preference-55k  +  routellm/gpt4_judge_battles
+        缺少后者会导致 win_rate 与官方产生系统偏差（实测差 3.2 倍，
+        补齐后均值比 0.995、逐条相关 0.766）。
+
+        Args:
+            datasets: 列表，每项形如
+                {"battles": <csv|parquet 路径>, "embeddings": <npy 路径>,
+                 "count": <可选，声明的 battle 条数>}
+
+        Returns:
+            (arena_df, embeddings)：拼接后的 preprocess DataFrame 与向量矩阵。
+
+        注意：
+            battles 与 embeddings 的**拼接顺序必须一致**。若 A 的 battles 配了
+            B 的 embeddings，总量层面可能仍然相等而无法察觉，故此处做
+            **per-dataset 行数校验**（每个数据集的 preprocess 行数须等于其
+            向量条数）来拦截错配。
+        """
+        import os
+
+        import pandas as pd
+
+        dfs = []
+        embs = []
+        for i, ds in enumerate(datasets):
+            battles_path = ds.get("battles")
+            emb_path = ds.get("embeddings")
+            if not battles_path or not emb_path:
+                raise ValueError(
+                    f"local_datasets[{i}] 需同时含 'battles' 与 'embeddings'；收到 {ds!r}"
+                )
+            for p in (battles_path, emb_path):
+                if not os.path.exists(p):
+                    raise FileNotFoundError(f"local_datasets[{i}] 文件不存在: {p}")
+
+            # 支持 csv 与 parquet（gpt4_judge_battles 官方发布为 parquet）
+            if battles_path.endswith(".parquet"):
+                raw = pd.read_parquet(battles_path)
+            else:
+                raw = pd.read_csv(battles_path)
+
+            one_df = preprocess_battles(raw.copy())
+            one_emb = np.load(emb_path)
+            if one_emb.dtype != np.float32:
+                one_emb = one_emb.astype(np.float32)
+
+            # per-dataset 校验：拦截 battles/embeddings 错配
+            declared = ds.get("count")
+            if declared is not None and one_df.shape[0] != declared:
+                raise ValueError(
+                    f"local_datasets[{i}] 声明 {declared} 条，"
+                    f"实际 preprocess 后 {one_df.shape[0]} 条"
+                )
+            if one_df.shape[0] != len(one_emb):
+                raise ValueError(
+                    f"local_datasets[{i}] 向量条数 {len(one_emb)} 与 "
+                    f"preprocess 行数 {one_df.shape[0]} 不匹配（疑似 battles/embeddings 错配）"
+                )
+
+            dfs.append(one_df)
+            embs.append(one_emb)
+
+        arena_df = pd.concat(dfs, ignore_index=True)
+        embeddings = np.concatenate(embs, axis=0)
+        if len(arena_df) != len(embeddings):
+            raise AssertionError(
+                f"拼接后行数 {len(arena_df)} 与向量 {len(embeddings)} 不一致"
+            )
+        return arena_df, embeddings
 
     @staticmethod
     def _load_local_data(battles_csv, embeddings_npy):

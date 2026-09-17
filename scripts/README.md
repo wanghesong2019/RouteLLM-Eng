@@ -22,6 +22,9 @@
 | `trace_sw_ranking_pipeline.py` | 逐环节追踪 sw_ranking 推理链路的中间量，定位区分度丢失环节 |
 | `probe_elo_weight_sensitivity.py` | 探测 Elo 回归对样本权重的敏感度（尺度不变性 / top-K / SCALE） |
 | `probe_weight_mapping.py` | 对比不同权重映射下的区分度，寻找候选修复方案 |
+| `build_judge_embeddings.py` | 生成 gpt4_judge_battles 的 bge-m3 向量（补齐官方 sw_ranking 的第二个数据集） |
+| `compare_with_official_thresholds.py` | 与官方 thresholds 数据集逐条对标 win_rate |
+| `verify_sw_ranking_multi_dataset.py` | 验证多数据集模式的 SWRankingRouter 与官方对齐 |
 
 ## 用法
 
