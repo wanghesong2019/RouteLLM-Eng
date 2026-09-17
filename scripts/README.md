@@ -25,6 +25,7 @@
 | `build_judge_embeddings.py` | 生成 gpt4_judge_battles 的 bge-m3 向量（补齐官方 sw_ranking 的第二个数据集） |
 | `compare_with_official_thresholds.py` | 与官方 thresholds 数据集逐条对标 win_rate |
 | `verify_sw_ranking_multi_dataset.py` | 验证多数据集模式的 SWRankingRouter 与官方对齐 |
+| `eval_router_apgr.py` | 按论文指标 APGR 评测路由在 MMLU / GSM8K 上的表现 |
 
 ## 用法
 

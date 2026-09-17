@@ -15,6 +15,7 @@
 | 2026-09-17 | [sw_ranking 服务化上线](2026-09-17-sw-ranking-service-deployment.md) | ⚠️ 部分 | 链路打通：6071 host 服务 + 容器启用 `remote_sw_ranking`（零挂载保持轻量）；**但发现 win_rate 全挤在 0.689~0.693，0.5 阈值下永远走强模型**（bert 对比有正常区分度 0.297~0.453）→ 待查 |
 | 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ✅ 已修复 | **根因：只接了 arena 未接 gpt4_judge_battles 数据集**（官方需拼接两个）；补齐后 mean 0.2148 vs 官方 0.2166（**均值比 0.9914**），逐条相关 **0.8052**（修复前 0.076） |
 | 2026-09-17 | [sw_ranking 阈值标定与路由选型建议](2026-09-17-sw-ranking-threshold-calibration.md) | ✅ 决策 | 阈值须用 quantile 标定（官方方法），50% 占比 → 0.2165；**逐 prompt 对比发现 sw_ranking 是「配额分配」而非「难度判断」**（跨度 0.007 vs bert 0.30）→ **生产默认用 `remote_bert`** |
+| 2026-09-17 | [bert 路由的论文指标评测（APGR）](2026-09-17-bert-apgr-evaluation.md) | ✅ 通过 | **MMLU APGR 0.5267 / GSM8K 0.5333**（对照全弱 0.68/0.64、全强 0.79/0.86）；评测无需真实 LLM API，5700 题评分 7.9s |
 
 ## 结论摘要（供快速引用）
 
