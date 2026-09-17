@@ -18,6 +18,10 @@
 | `verify_sw_ranking_local.py` | 验证 SWRankingRouter 本地化改造：本地数据+bge-m3 端到端、无 HF/OpenAI 依赖、确定性、延迟 |
 | `profile_sw_ranking_latency.py` | 拆解路由延迟构成，定位瓶颈阶段（编码/点积/Elo 回归） |
 | `bench_elo_solvers.py` | 对比 elo 回归各求解器的耗时与结果一致性 |
+| `diagnose_sw_ranking_distribution.py` | 诊断 sw_ranking 的 win_rate 分布并标定 threshold（对比 bert） |
+| `trace_sw_ranking_pipeline.py` | 逐环节追踪 sw_ranking 推理链路的中间量，定位区分度丢失环节 |
+| `probe_elo_weight_sensitivity.py` | 探测 Elo 回归对样本权重的敏感度（尺度不变性 / top-K / SCALE） |
+| `probe_weight_mapping.py` | 对比不同权重映射下的区分度，寻找候选修复方案 |
 
 ## 用法
 

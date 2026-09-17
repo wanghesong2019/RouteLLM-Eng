@@ -13,6 +13,7 @@
 | 2026-09-17 | [sw_ranking 本地化与 Elo 求解器性能优化](2026-09-17-sw-ranking-localization.md) | ✅ 通过 | 本地 bge-m3 替代 OpenAI Embedding（55361 条 / 112s / $0）；**路由延迟 90% 在 `LogisticRegression.fit`**，换 newton-cholesky 后端到端 **394ms → 185ms（2.1×）**，模型排序完全一致 |
 | 2026-09-17 | [镜像重建与容器切换](2026-09-17-image-rebuild-container-switch.md) | ✅ 通过 | 新代码上线无回归（镜像 675→704MB，仍未装 torch）；**关键发现：真实网关中路由开销占比 <5%，下游 LLM 生成占 1.7~16s** |
 | 2026-09-17 | [sw_ranking 服务化上线](2026-09-17-sw-ranking-service-deployment.md) | ⚠️ 部分 | 链路打通：6071 host 服务 + 容器启用 `remote_sw_ranking`（零挂载保持轻量）；**但发现 win_rate 全挤在 0.689~0.693，0.5 阈值下永远走强模型**（bert 对比有正常区分度 0.297~0.453）→ 待查 |
+| 2026-09-17 | [sw_ranking 区分度不足的根因诊断](2026-09-17-sw-ranking-discrimination-diagnosis.md) | ✅ 根因定位 | **`get_weightings` 动态范围仅 7 倍（14~100）→ 5.5 万条近似等权 → 全量参与时 elo_diff 全距为 0**；排除 sigmoid 饱和与 bge-m3 因素；候选修复（拉大动态范围）已验证方向正确，待 benchmark 论证 |
 
 ## 结论摘要（供快速引用）
 
@@ -42,7 +43,7 @@ compute_elo_mle_with_tie        355.5ms   90.1%   ← 瓶颈
 
 > 求解器性能对 `sample_weight` 的**逐元素排列**敏感。合成权重（uniform / beta）下 newton-cholesky 反而更慢，性能测试必须走真实路由链路取 `get_weightings(cosine_sims)`。
 
-### ⚠️ 已知问题：sw_ranking 区分度不足（2026-09-17）
+### ⚠️ 已知问题：sw_ranking 区分度不足（2026-09-17，根因已定位）
 
 | prompt | sw_ranking | bert |
 |---|---|---|
@@ -50,11 +51,26 @@ compute_elo_mle_with_tie        355.5ms   90.1%   ← 瓶颈
 | What is 1+1? | 0.6931 | 0.2970 |
 | 证明√2无理数 | 0.6920 | 0.4533 |
 
-- sw_ranking 的 win_rate 全部挤在 **0.689~0.693**（极差 0.0039），**高于 0.5 阈值**
-- 后果：threshold=0.5 下**所有请求都走强模型**，失去省钱意义
-- bert 对比有正常区分度与正确方向
-- **生产路由应继续用 `remote_bert`**，`remote_sw_ranking` 待查清后再启用
-- 待查方向：向量维度差异（bge-m3 1024 vs 官方 1536）/ `get_weightings` 按最大值归一化的副作用 / threshold 标定 / 缺少 `gpt4_judge_battles` 数据
+分布实测（n=300）：sw_ranking **std=0.0008 / 全距 0.0043**，bert **std=0.15 / 全距 0.844**（相差约 190 倍）。
+
+**根因**：`get_weightings(sims) = 10 * 10^(sim/max_sim)` 的**动态范围仅 7 倍**（实测 14.3~100）。
+最不相似的 battle 也拿到约 1/7 权重 → 5.5 万条样本**近似等权**参与 LogisticRegression
+→ 单 prompt 的相似度差异被平均掉。
+
+**决定性证据**（top-K 对照）：
+
+| topK | 两个极端 prompt 的 elo_diff | 全距 |
+|---|---|---|
+| 100 | [2.17, 89.23] | 87.05 |
+| 全部 55361 | **[141.013, 141.013]** | **0** |
+
+**已排除的假设**：sigmoid 饱和（斜率仅降 15%，非 150 倍）；elo_strong/weak 同增同减（corr=0.07）；bge-m3 编码能力（向量间相似度 0.3~0.7 正常）。
+
+**候选修复**（已验证方向，未决策）：拉大权重动态范围。`pow p=16` → winrate 全距 0.4002；
+`top 1%` → 0.1764。`pow p=8` 的逐条结果方向正确（hi→0.654 最低，证明√2→0.698 最高）。
+
+**建议**：生产路由继续用 `remote_bert`；修复前需先用官方 thresholds 数据集对标 +
+benchmark 准确率论证，不可擅自改动上游算法语义。
 
 ### 环境版本（43 号机 rag-dev 环境）
 
