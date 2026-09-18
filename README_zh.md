@@ -22,32 +22,7 @@
 
 ## 📐 架构
 
-```
-              ┌────────────────────────────────┐
-              │  Client (OpenAI-compatible)     │
-              │  base_url + api_key             │
-              └──────────┬─────────────────────┘
-                         │ OpenAI API + Bearer key
-                         ▼
-┌──────────────────────────────────────────────────────────┐
-│                RouteLLM Gateway (:6060)                  │
-│                                                          │
-│  ApiKey Middleware → Metrics Middleware → FastAPI Server │
-│  /v1/chat/completions  /metrics  /dashboard             │
-│                                                          │
-│  ConfigStore (hot reload) ←→ Controller (lock-free read) │
-│  SQLite (metrics persistence)                            │
-│  MultiTierCache (L1 LRU → L2/L3 injectable)              │
-│  Routers: remote_bert (host:6070) / random              │
-└──────┬───────────────────────────┬──────────────────────┘
-       │                            │ read-only mount
-       ▼                            ▼
-┌──────────────┐          ┌──────────────────────────┐
-│ Strong/Weak  │          │ Dashboard (:8092)        │
-│ LLM (OpenAI  │          │ HTML + ECharts           │
-│ compatible)  │          │ + Config editor tab      │
-└──────────────┘          └──────────────────────────┘
-```
+![RouteLLM-Eng 架构](assets/RouteLLM-Architectural-diagram.jpg)
 
 ## 快速开始
 
