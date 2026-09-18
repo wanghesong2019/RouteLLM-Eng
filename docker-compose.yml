@@ -58,6 +58,15 @@ services:
       # 配置文件落在共享卷；容器重建不丢（无此文件时回落上面的环境变量）
       ROUTELLM_RUNTIME_CONFIG: "/data/runtime_config.json"
 
+      # ---- 容错与 Resilience（方案文档 4.3）----
+      # 默认关闭（enabled 未设或为 false 时行为与改造前完全一致）。
+      # 开启后下游调用被 重试 + 熔断 + 降级链 包裹：
+      #   路由器异常→走弱 ｜ 强失败→弱 ｜ 弱失败→缓存 ｜ 全耗尽→503+Retry-After
+      ROUTELLM_RESILIENCE_ENABLED: "${ROUTELLM_RESILIENCE_ENABLED:-false}"
+      ROUTELLM_RESILIENCE_FAILURE_THRESHOLD: "${ROUTELLM_RESILIENCE_FAILURE_THRESHOLD:-5}"
+      ROUTELLM_RESILIENCE_RECOVERY_TIMEOUT: "${ROUTELLM_RESILIENCE_RECOVERY_TIMEOUT:-60}"
+      ROUTELLM_RESILIENCE_MAX_ATTEMPTS: "${ROUTELLM_RESILIENCE_MAX_ATTEMPTS:-3}"
+
     volumes:
       # metrics SQLite 共享卷（网关写、dashboard 读）
       # 用宿主机目录而非命名卷 —— 命名卷默认 root 拥有，容器内非 root 用户
