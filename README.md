@@ -1,32 +1,41 @@
-# 🚀 RouteLLM-Eng
+<p align="center">
+  <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
+</p>
 
-> Production-Grade LLM Routing Gateway based on LMSYS [RouteLLM](https://github.com/lmsys/routellm)
+<p align="center">
+  <h1 align="center">🚀 RouteLLM-Eng</h1>
+  <p align="center">
+    <strong>Production-Grade LLM Routing Gateway</strong><br>
+    Based on LMSYS <a href="https://github.com/lmsys/routellm">RouteLLM</a> (ICLR 2025)
+  </p>
+  <p align="center">
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"/></a>
+    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License"/></a>
+    <a href="#tests"><img src="https://img.shields.io/badge/tests-315%20passed-brightgreen.svg" alt="Tests"/></a>
+    <a href="#quick-start"><img src="https://img.shields.io/badge/docker-675MB-blue.svg" alt="Docker"/></a>
+  </p>
+</p>
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://img.shields.io/badge/tests-315%20passed-brightgreen.svg)](#tests)
-[![Docker](https://img.shields.io/badge/docker-675MB-blue.svg)](#quick-start)
+---
 
-[English](README.md) | [简体中文](README_zh.md)
+Transforming LMSYS RouteLLM from an academic prototype into a production-grade routing gateway — adding enterprise caching, circuit breakers, full-chain observability, and async high-concurrency architecture while preserving routing effectiveness.
 
-**Transforming LMSYS RouteLLM from an academic prototype into a production-grade routing gateway.** Adds enterprise-grade caching, circuit breakers, full-chain observability, and async high-concurrency architecture — while preserving routing effectiveness.
+## ✨ Features
 
-## ✨ Key Features
-
-| Feature | What it does |
-|---------|-------------|
-| ⚡ **Performance** | Identified and refactored `LogisticRegression.fit` bottleneck (→ `newton-cholesky`), cutting routing latency from 394ms to 185ms. Win-rate multi-tier cache hits reduce latency by 4 orders of magnitude. |
-| 🛡️ **Resilience** | Three-state circuit breaker + exponential backoff retry + four-level fallback chain (strong → weak → cache → 503). The gateway never cascades. |
-| 📊 **Observability** | Non-invasive FastAPI middleware collects per-request metrics → SQLite → built-in ECharts dashboard. Metrics persist across restarts. |
-| 🔄 **Async** | Router base class fully async + `httpx.AsyncClient` connection pooling. Slow requests no longer block the event loop. |
-| ⚙️ **Hot Reload** | Strong/weak model `base_url`, `api_key`, model names support runtime updates without restart. Immutable config objects with atomic replacement for thread safety. |
-| 🔒 **Security** | `/v1/models` endpoint; API key middleware (Bearer + HMAC anti-timing-attack); strict whitelist for ops endpoints. |
+- ⚡ **Performance** — Refactored `LogisticRegression.fit` bottleneck (`newton-cholesky`), routing latency 394ms → 185ms. Multi-tier cache hits reduce win-rate lookup by 4 orders of magnitude.
+- 🛡️ **Resilience** — Three-state circuit breaker + exponential backoff + four-level fallback chain (strong → weak → cache → 503). Never cascades.
+- 📊 **Observability** — Non-invasive FastAPI middleware → SQLite → built-in ECharts dashboard. Metrics persist across restarts.
+- 🔄 **Async** — Fully async router base class + `httpx.AsyncClient` connection pooling. Slow requests never block the event loop.
+- ⚙️ **Hot Reload** — Model `base_url`, `api_key`, and names update at runtime. Immutable config objects with atomic replacement.
+- 🔒 **Security** — API key middleware (Bearer + HMAC anti-timing-attack), `/v1/models` endpoint, strict whitelist for ops endpoints.
 
 ## 📐 Architecture
 
-![RouteLLM-Eng Architecture](assets/RouteLLM-Architectural-diagram.jpg)
+<p align="center">
+  <img src="assets/RouteLLM-Architectural-diagram.jpg" alt="RouteLLM-Eng Architecture" width="80%"/>
+</p>
 
-## Quick Start
+## ⚡ Quick Start
 
 ### Docker (recommended)
 
@@ -35,17 +44,17 @@ cp .env.example .env       # Fill in strong/weak models and credentials
 docker compose up -d       # Gateway :6060 + Dashboard :8092
 ```
 
-The gateway exposes an OpenAI-compatible API — any compatible client works:
+Test with any OpenAI-compatible client:
 
 ```bash
 curl http://localhost:6060/v1/chat/completions \
-  -H "Authorization: Bearer $ROUTELLM_API_KEY" \
+  -H "Authorization: Bearer $ROUTE...KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"router-bert-0.5",
-       "messages":[{"role":"user","content":"..."}]}'
+       "messages":[{"role":"user","content":"Hello!"}]}'
 ```
 
-The `model` field is a **routing spec** (`router-<name>-<threshold>`), not a downstream model name.
+> The `model` field is a **routing spec** (`router-<name>-<threshold>`), not a downstream model name.
 
 ### From source
 
@@ -54,23 +63,9 @@ pip install -e ".[serve,eval]"
 python -m routellm.openai_server --routers random  # random needs no GPU
 ```
 
-> **Drop-in Replacement**: Since the gateway preserves OpenAI-compatible protocol and upstream interfaces, switching from OpenAI or vanilla RouteLLM requires only changing `base_url`. Zero code changes.
+> **Drop-in replacement** — only `base_url` needs to change. Zero code modifications required.
 
-## Why RouteLLM-Eng?
-
-Upstream RouteLLM is an academic prototype — it guarantees algorithm correctness but ignores production concerns:
-
-| Problem | Upstream | RouteLLM-Eng |
-|---------|----------|-------------|
-| No caching | Every request recalculates win-rate (~350ms) | Multi-tier cache, hit 0.02ms (4 orders of magnitude) |
-| No observability | `logging.info` + in-memory dict | FastAPI middleware → SQLite → ECharts dashboard |
-| No fault tolerance | Bare `litellm.completion()`, no retry/timeout | Circuit breaker + retry + 4-level fallback chain |
-| Sync blocking | Async FastAPI but sync routers | Full async: `httpx.AsyncClient` + `asyncio.to_thread` |
-| No deployment | No Dockerfile/CI | Docker (675MB, no torch) + compose dual-container |
-| Config frozen | Restart to change models | Runtime hot reload, atomic config swap |
-| Broken defaults | Default model provider removed by LiteLLM | All config via env vars, fail-fast validation |
-
-## Evaluation
+## 📊 Evaluation
 
 Reproduces paper metrics (APGR / CPT framework, RouteLLM, ICLR 2025):
 
@@ -81,31 +76,48 @@ Reproduces paper metrics (APGR / CPT framework, RouteLLM, ICLR 2025):
 
 Random baseline APGR ≈ 0.5 — **APGR > 0.5 means routing is effective**.
 
-> **Counter-intuitive finding**: APGR cannot be used to select thresholds. PGR increases monotonically with strong-model usage, so maximizing APGR always yields "route everything to strong." Use **CPT** (minimum strong ratio to reach target PGR) instead — fix quality target, then solve for cost.
+> **Counter-intuitive finding**: APGR cannot select thresholds (PGR increases monotonically with strong-model usage). Use **CPT** instead — fix quality target, solve for cost.
 
-## Documentation
+<details>
+<summary><strong>🔍 Why RouteLLM-Eng? (Upstream comparison)</strong></summary>
+
+<br>
+
+| Problem | Upstream | RouteLLM-Eng |
+|---------|----------|-------------|
+| No caching | Every request recalculates win-rate (~350ms) | Multi-tier cache, hit 0.02ms |
+| No observability | `logging.info` + in-memory dict | Middleware → SQLite → ECharts |
+| No fault tolerance | Bare `litellm.completion()`, no retry | Circuit breaker + retry + 4-level fallback |
+| Sync blocking | Async FastAPI but sync routers | Full async: `httpx` + `asyncio.to_thread` |
+| No deployment | No Dockerfile/CI | Docker (675MB) + compose dual-container |
+| Config frozen | Restart to change models | Runtime hot reload, atomic swap |
+| Broken defaults | Default provider removed by LiteLLM | All config via env vars, fail-fast |
+
+</details>
+
+## 📚 Documentation
 
 | Path | Content |
 |------|---------|
-| `docs/CHANGELOG.md` | Engineering log: every step, measured data, pitfalls |
-| `docs/decisions/` | Architecture Decision Records (ADR) |
-| `scripts/README.md` | Script index |
-| `services/README.md` | Inference service setup |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Engineering log with measured data and pitfalls |
+| [`docs/decisions/`](docs/decisions/) | Architecture Decision Records (ADR) |
+| [`scripts/README.md`](scripts/README.md) | Script index |
+| [`services/README.md`](services/README.md) | Inference service setup |
 
-## Open Source Hygiene
+## 🧪 Tests
+
+```bash
+pytest tests/ -q
+# 315 passed, 17 skipped
+```
+
+## 🔐 Open Source Hygiene
 
 Built-in guard script checks for credentials, internal IPs, and deployment artifacts:
 
 ```bash
 python scripts/check_open_source_hygiene.py        # Scan workspace
 python scripts/check_open_source_hygiene.py --all  # Also scan git history
-```
-
-## Tests
-
-```bash
-pytest tests/ -q
-# 315 passed, 17 skipped
 ```
 
 ## 🗺️ Roadmap
@@ -118,17 +130,17 @@ pytest tests/ -q
 
 ## 🤝 Contributing
 
-Contributions welcome! Before submitting a PR:
+Before submitting a PR:
 
 1. Run `python scripts/check_open_source_hygiene.py` — ensure no sensitive info
 2. Ensure `pytest tests/ -q` passes
-3. Reference `docs/decisions/` ADRs for architecture context
+3. Reference [`docs/decisions/`](docs/decisions/) ADRs for architecture context
 
-## License
+## 📄 License
 
-MIT License (inherited from upstream), see `LICENSE`.
+MIT License (inherited from upstream). See [`LICENSE`](LICENSE).
 
-## Citation
+## 📎 Citation
 
 ```bibtex
 @inproceedings{ong2025routellm,
