@@ -65,6 +65,46 @@ class Router(abc.ABC):
     def calculate_strong_win_rate(self, prompt):
         pass
 
+    # ------------------------------------------------------------------
+    # 异步接口（方案文档 4.4）
+    #
+    # 背景：FastAPI 是 async 入口，但路由实现是同步的（同步 HTTP/embedding
+    # 调用 + 同步 numpy/torch 计算）。直接在协程里调用会**阻塞事件循环**，
+    # 单 worker 下一个慢请求就让所有并发请求排队。
+    #
+    # 策略（两方案结合，见文档 4.4）：
+    #   - 基类默认实现走 asyncio.to_thread —— 让同步实现跑到线程池，
+    #     事件循环不再被阻塞。这是「通用兜底」，任何子类无需改动即受益。
+    #   - 有原生异步能力的子类（如 RemoteBERTRouter 用 httpx.AsyncClient）
+    #     重写 route_async，拿到真正的并发（线程池会受 GIL 与线程数限制）。
+    # ------------------------------------------------------------------
+    async def calculate_strong_win_rate_async(self, prompt) -> float:
+        """异步计算 win_rate。
+
+        默认实现把同步方法丢到线程池，事件循环不被阻塞。
+        子类若有无阻塞的原生异步实现，应重写以获取更好并发度。
+        """
+        import asyncio
+
+        return await asyncio.to_thread(self.calculate_strong_win_rate, prompt)
+
+    async def route_async(self, prompt, threshold, routed_pair):
+        """异步路由决策，语义与 :meth:`route` 完全一致。
+
+        默认走线程池包装；子类可重写为真异步。
+        """
+        win_rate = await self.calculate_strong_win_rate_async(prompt)
+        return self._pick(win_rate, threshold, routed_pair)
+
+    @staticmethod
+    def _pick(win_rate, threshold, routed_pair):
+        """按 win_rate 与阈值选择模型（同步/异步路径共用，避免逻辑漂移）。"""
+        if routed_pair is None:
+            return win_rate
+        return (
+            routed_pair.strong if win_rate >= threshold else routed_pair.weak
+        )
+
     def route(self, prompt, threshold, routed_pair):
         if self.calculate_strong_win_rate(prompt) >= threshold:
             return routed_pair.strong

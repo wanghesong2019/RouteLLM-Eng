@@ -378,6 +378,53 @@ class Controller:
             )
         return router, threshold
 
+    def _router_failure_fallback_probe(self, router_instance, prompt, threshold, live_pair):
+        """路由器故障时的回落决策，返回 (routed_model, is_fallback)。
+
+        纯函数式：**不写 ContextVar** —— 因为本方法会在 asyncio.to_thread
+        的工作线程里执行，而线程内的 ContextVar 写入不会传播回主协程。
+        标记由调用方在主协程中设置。
+
+        先试原有 route()；若同样失败（路由器服务整体不可达）：
+          - 启用容错 → 判定走弱，is_fallback=True
+          - 未启用   → 原样抛出（保持改造前行为）
+        """
+        try:
+            return router_instance.route(prompt, threshold, live_pair), False
+        except Exception:  # noqa: BLE001
+            if not self.resilience_enabled:
+                raise
+            # 路由器整体故障 → 被迫走弱。这是**降级**，不是阈值判定。
+            return live_pair.weak, True
+
+    def _router_failure_fallback(self, router_instance, prompt, threshold, live_pair):
+        """同步场景的回落：调 probe 并在当前上下文设置标记。"""
+        routed_model, is_fallback = self._router_failure_fallback_probe(
+            router_instance, prompt, threshold, live_pair
+        )
+        if is_fallback:
+            _set_router_fallback(True)
+        return routed_model
+
+    def _finalize_routing(
+        self, *, router: str, win_rate: float, routed_model: str,
+        live_pair, latency_ms: float, threshold: float
+    ) -> str:
+        """路由收尾：计数 + 记录元信息。同步/异步共用，避免逻辑漂移。"""
+        self.model_counts[router][routed_model] += 1
+        _set_routing_info(
+            RoutingInfo(
+                router=router,
+                threshold=float(threshold),
+                win_rate=win_rate,
+                routed_model=(
+                    "strong" if routed_model == live_pair.strong else "weak"
+                ),
+                latency_ms=round(latency_ms, 3),
+            )
+        )
+        return routed_model
+
     def _get_routed_model_for_completion(
         self, messages: list, router: str, threshold: float
     ):
@@ -406,34 +453,75 @@ class Controller:
             #   - 启用容错：直接判定走弱模型（降级链①），让下游降级逻辑
             #     正常接管，而不是把路由层异常抛给客户端
             #   - 未启用容错：保持改造前行为，原样抛出
-            try:
-                routed_model = router_instance.route(prompt, threshold, live_pair)
-            except Exception:  # noqa: BLE001
-                if not self.resilience_enabled:
-                    raise
-                # 路由器整体故障 → 被迫走弱。这是**降级**，不是阈值判定，
-                # 必须标记出来供下游区分（见 _ROUTER_FALLBACK 说明）。
-                routed_model = live_pair.weak
+            routed_model = self._router_failure_fallback(
+                router_instance, prompt, threshold, live_pair
+            )
+            win_rate = 0.0
+        latency_ms = (_time.perf_counter() - t0) * 1000
+
+        return self._finalize_routing(
+            router=router, win_rate=win_rate, routed_model=routed_model,
+            live_pair=live_pair, latency_ms=latency_ms, threshold=threshold,
+        )
+
+    async def _get_routed_model_for_completion_async(
+        self, messages: list, router: str, threshold: float
+    ):
+        """异步版路由决策（方案文档 4.4）。
+
+        与同步版语义完全一致，差别只在算 win_rate 时走 await 的异步接口 ——
+        同步 HTTP/计算不再阻塞事件循环。
+
+        对没有原生异步实现的路由器，基类的
+        `calculate_strong_win_rate_async` 会用 `asyncio.to_thread` 兜底，
+        因此这里对任意路由器都安全。
+        """
+        import asyncio as _asyncio
+        import time as _time
+
+        prompt = messages[-1]["content"]
+        live_pair = self.live_model_pair()
+
+        t0 = _time.perf_counter()
+        _set_router_fallback(False)
+        router_instance = self.routers[router]
+        try:
+            async_fn = getattr(
+                router_instance, "calculate_strong_win_rate_async", None
+            )
+            if async_fn is not None:
+                win_rate = float(await async_fn(prompt))
+            else:
+                # 防御：路由器若未继承 Router 基类（无异步兜底），
+                # 用线程池执行同步版本，语义一致且不阻塞事件循环。
+                win_rate = float(
+                    await _asyncio.to_thread(
+                        router_instance.calculate_strong_win_rate, prompt
+                    )
+                )
+            routed_model = (
+                live_pair.strong if win_rate >= threshold else live_pair.weak
+            )
+        except Exception:  # noqa: BLE001
+            # 回落同样不能阻塞事件循环，故用线程池执行同步 route()
+            #
+            # 注意：_router_failure_fallback 内部会 set ContextVar，而
+            # asyncio.to_thread 里对 ContextVar 的写入**不会传播回主协程**
+            # （线程拿到的是 context 副本）。因此这里改为在线程内完成判断、
+            # 把结果显式带回主协程后再设置标记。
+            routed_model, is_fallback = await _asyncio.to_thread(
+                self._router_failure_fallback_probe,
+                router_instance, prompt, threshold, live_pair,
+            )
+            if is_fallback:
                 _set_router_fallback(True)
             win_rate = 0.0
         latency_ms = (_time.perf_counter() - t0) * 1000
 
-        self.model_counts[router][routed_model] += 1
-
-        # 记录元信息供监控体系读取（见 RoutingInfo 的说明）
-        _set_routing_info(
-            RoutingInfo(
-                router=router,
-                threshold=float(threshold),
-                win_rate=win_rate,
-                routed_model=(
-                    "strong" if routed_model == live_pair.strong else "weak"
-                ),
-                latency_ms=round(latency_ms, 3),
-            )
+        return self._finalize_routing(
+            router=router, win_rate=win_rate, routed_model=routed_model,
+            live_pair=live_pair, latency_ms=latency_ms, threshold=threshold,
         )
-
-        return routed_model
 
     # Mainly used for evaluations
     def batch_calculate_win_rate(
@@ -471,7 +559,8 @@ class Controller:
         self.last_downgraded = False  # 逐请求重置降级标记
 
         messages = kwargs["messages"]
-        routed_model = self._get_routed_model_for_completion(
+        # 走**异步**路由路径（方案文档 4.4）—— 同步 HTTP/计算不再阻塞事件循环
+        routed_model = await self._get_routed_model_for_completion_async(
             messages, router, threshold
         )
         live_pair = self.live_model_pair()

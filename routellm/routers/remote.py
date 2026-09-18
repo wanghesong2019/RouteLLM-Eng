@@ -129,6 +129,86 @@ class RemoteBERTRouter(Router):
         return out
 
     # ------------------------------------------------------------------
+    # 异步 HTTP 层（方案文档 4.4）
+    #
+    # 现状：同步 urllib 调用。在 FastAPI 的 async 入口里直接调它会阻塞事件
+    # 循环 —— 单 worker 下一个慢请求让所有并发排队。
+    #
+    # 改造：改用 httpx.AsyncClient + 连接池复用。
+    # 为什么必须复用 client 而不是每次新建：新建 client 每次都建立 TCP/TLS
+    # 连接，并发反而退化为串行（连接建立是同步等待）。这里懒加载单例，
+    # 由 aclose() 释放。
+    # ------------------------------------------------------------------
+    async def _get_async_client(self):
+        """取（或懒加载）复用的 httpx.AsyncClient。"""
+        client = getattr(self, "_async_client", None)
+        if client is None:
+            import httpx
+
+            client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(
+                    max_connections=max(10, self.batch_size),
+                    max_keepalive_connections=10,
+                ),
+            )
+            self._async_client = client
+        return client
+
+    async def aclose(self) -> None:
+        """关闭异步连接池（服务关停时调用；未创建过则无操作）。"""
+        client = getattr(self, "_async_client", None)
+        if client is not None:
+            try:
+                await client.aclose()
+            finally:
+                self._async_client = None
+
+    async def _async_score_prompts(self, prompts: List[str]) -> List[float]:
+        """异步 POST /v1/score。可被测试替换。
+
+        异常语义与同步版一致：统一包装成 RemoteInferenceError，
+        让上层（含容错降级链）只面对一种异常类型。
+        """
+        url = f"{self.base_url}/v1/score"
+        try:
+            client = await self._get_async_client()
+            resp = await client.post(url, json={"prompts": prompts})
+            if resp.status_code >= 400:
+                raise RemoteInferenceError(
+                    f"inference service returned HTTP {resp.status_code} "
+                    f"for {url}: {resp.text[:300]}"
+                )
+            data = resp.json()
+        except RemoteInferenceError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise RemoteInferenceError(
+                f"cannot reach inference service at {url}: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+
+        return self._extract_win_rates(data, len(prompts))
+
+    async def calculate_strong_win_rate_batch_async(
+        self, prompts: List[str]
+    ) -> List[float]:
+        """异步批量评分，按 batch_size 分片且保持顺序。"""
+        if not prompts:
+            return []
+
+        out: List[float] = []
+        for start in range(0, len(prompts), self.batch_size):
+            chunk = prompts[start : start + self.batch_size]
+            out.extend(await self._async_score_prompts(chunk))
+        return out
+
+    async def calculate_strong_win_rate_async(self, prompt: str) -> float:
+        """异步单条评分。"""
+        res = await self.calculate_strong_win_rate_batch_async([prompt])
+        return res[0]
+
+    # ------------------------------------------------------------------
     # Router 契约
     # ------------------------------------------------------------------
     def calculate_strong_win_rate(self, prompt: str) -> float:

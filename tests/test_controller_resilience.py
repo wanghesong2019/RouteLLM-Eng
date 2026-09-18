@@ -66,8 +66,11 @@ async def test_acompletion_falls_back_to_weak_on_strong_failure(monkeypatch):
         return _FakeResp("weak-answer")
 
     monkeypatch.setattr("routellm.controller.acompletion", fake_acompletion)
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().strong)
+    # 注意：acompletion 走**异步**路由路径（方案文档 4.4），须 patch 异步版
+    async def _force_strong(*a, **k):
+        return c.live_model_pair().strong
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_strong)
     c.resilience_enabled = True
     c.resilience_max_attempts = 1
 
@@ -87,8 +90,10 @@ async def test_acompletion_normal_path_not_downgraded(monkeypatch):
         return _FakeResp("strong-answer")
 
     monkeypatch.setattr("routellm.controller.acompletion", fake_acompletion)
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().strong)
+    async def _force_strong(*a, **k):
+        return c.live_model_pair().strong
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_strong)
     c.resilience_enabled = True
 
     res = await c.acompletion(model="router-random-0.5",
@@ -106,8 +111,10 @@ async def test_acompletion_exhausted_raises_fallback_error(monkeypatch):
         raise TimeoutError("down")
 
     monkeypatch.setattr("routellm.controller.acompletion", always_timeout)
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().strong)
+    async def _force_strong(*a, **k):
+        return c.live_model_pair().strong
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_strong)
     c.resilience_enabled = True
     c.resilience_max_attempts = 1  # 不重试，单次失败即降级
 
@@ -136,8 +143,10 @@ async def test_acompletion_uses_cache_when_both_fail(monkeypatch):
         raise TimeoutError("down")
 
     monkeypatch.setattr("routellm.controller.acompletion", always_timeout)
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().strong)
+    async def _force_strong(*a, **k):
+        return c.live_model_pair().strong
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_strong)
     c.resilience_enabled = True
     c.resilience_max_attempts = 1
 
@@ -179,8 +188,10 @@ async def test_resilience_disabled_keeps_legacy_behavior(monkeypatch):
         raise TimeoutError("down")
 
     monkeypatch.setattr("routellm.controller.acompletion", always_timeout)
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().strong)
+    async def _force_strong(*a, **k):
+        return c.live_model_pair().strong
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_strong)
 
     with pytest.raises(TimeoutError):
         await c.acompletion(model="router-random-0.5",
@@ -197,8 +208,10 @@ async def test_router_decision_weak_is_not_marked_downgraded(monkeypatch):
     控制器必须显式纠正：只有「强模型失败后落到弱/缓存」才算降级。
     """
     c = _make_controller()
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().weak)  # 路由判定走弱
+    async def _force_weak(*a, **k):
+        return c.live_model_pair().weak  # 路由判定走弱
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_weak)
     c.resilience_enabled = True
 
     async def fake_acompletion(**kwargs):
@@ -291,8 +304,10 @@ async def test_retry_not_applied_to_bad_request(monkeypatch):
         raise BadRequestError("400 invalid param")
 
     monkeypatch.setattr("routellm.controller.acompletion", bad)
-    monkeypatch.setattr(c, "_get_routed_model_for_completion",
-                        lambda *a, **k: c.live_model_pair().strong)
+    async def _force_strong(*a, **k):
+        return c.live_model_pair().strong
+
+    monkeypatch.setattr(c, "_get_routed_model_for_completion_async", _force_strong)
     c.resilience_enabled = True
 
     with pytest.raises(BadRequestError):
