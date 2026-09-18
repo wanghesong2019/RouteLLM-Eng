@@ -188,6 +188,69 @@ async def test_resilience_disabled_keeps_legacy_behavior(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_router_failure_degrades_to_weak(monkeypatch):
+    """降级链①：路由器彻底故障时应走弱模型，而不是把异常抛给客户端。
+
+    回归背景：`_get_routed_model_for_completion` 原有兜底是「再调一次
+    route()」——若路由器服务整体不可达（如 BERT 6070 挂掉），第二次调用
+    同样失败，异常直接冒泡，永远到不了下游降级链。
+    实测在 43 上以 RemoteInferenceError 复现。
+    """
+    c = _make_controller()
+    calls: list[str] = []
+
+    class RemoteInferenceError(Exception):
+        pass
+
+    # 路由器实例：calculate 与 route 均失败
+    class _DeadRouter:
+        def calculate_strong_win_rate(self, prompt):
+            raise RemoteInferenceError("cannot reach inference service")
+
+        def route(self, prompt, threshold, pair):
+            raise RemoteInferenceError("cannot reach inference service")
+
+    c.routers["random"] = _DeadRouter()
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs["model"])
+        return _FakeResp("weak-answer")
+
+    monkeypatch.setattr("routellm.controller.acompletion", fake_acompletion)
+    c.resilience_enabled = True
+    c.resilience_max_attempts = 1
+
+    res = await c.acompletion(model="router-random-0.5",
+                              messages=[{"role": "user", "content": "hi"}])
+    assert res.text == "weak-answer", "路由器故障应降级到弱模型"
+    assert c.last_downgraded is True
+    # 只应调用弱模型（不浪费强模型调用）
+    assert all("weak" in m for m in calls), calls
+
+
+@pytest.mark.asyncio
+async def test_router_failure_without_resilience_still_raises(monkeypatch):
+    """未启用容错时，路由器故障仍按原行为抛出（向后兼容）。"""
+    c = _make_controller()
+
+    class RemoteInferenceError(Exception):
+        pass
+
+    class _DeadRouter:
+        def calculate_strong_win_rate(self, prompt):
+            raise RemoteInferenceError("dead")
+
+        def route(self, prompt, threshold, pair):
+            raise RemoteInferenceError("dead")
+
+    c.routers["random"] = _DeadRouter()
+
+    with pytest.raises(RemoteInferenceError):
+        await c.acompletion(model="router-random-0.5",
+                            messages=[{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
 async def test_retry_not_applied_to_bad_request(monkeypatch):
     """参数错误不应重试，也不应触发降级到弱模型（重试无意义）。"""
     c = _make_controller()

@@ -377,8 +377,18 @@ class Controller:
                 live_pair.strong if win_rate >= threshold else live_pair.weak
             )
         except Exception:  # noqa: BLE001
-            # 路由失败时回落到原接口（保持既有容错行为）
-            routed_model = router_instance.route(prompt, threshold, live_pair)
+            # 路由失败时回落到原接口（保持既有容错行为）。
+            # 注意：若路由器服务**整体不可达**（如 BERT 6070 挂掉），
+            # 这次回落同样会失败 —— 此时：
+            #   - 启用容错：直接判定走弱模型（降级链①），让下游降级逻辑
+            #     正常接管，而不是把路由层异常抛给客户端
+            #   - 未启用容错：保持改造前行为，原样抛出
+            try:
+                routed_model = router_instance.route(prompt, threshold, live_pair)
+            except Exception:  # noqa: BLE001
+                if not self.resilience_enabled:
+                    raise
+                routed_model = live_pair.weak
             win_rate = 0.0
         latency_ms = (_time.perf_counter() - t0) * 1000
 
