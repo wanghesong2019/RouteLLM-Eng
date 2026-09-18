@@ -7,6 +7,8 @@
 [![Tests](https://img.shields.io/badge/tests-315%20passed-brightgreen.svg)](#测试)
 [![Docker](https://img.shields.io/badge/docker-675MB-blue.svg)](#快速开始)
 
+[English](README.md) | [简体中文](README_zh.md)
+
 **把 LMSYS RouteLLM 从学术原型改造为生产级路由网关。** 在保持路由有效性的前提下，补齐企业级的缓存、熔断、全链路可观测性与异步高并发架构。
 
 ## ✨ 核心特性

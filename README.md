@@ -7,6 +7,8 @@
 [![Tests](https://img.shields.io/badge/tests-315%20passed-brightgreen.svg)](#tests)
 [![Docker](https://img.shields.io/badge/docker-675MB-blue.svg)](#quick-start)
 
+[English](README.md) | [简体中文](README_zh.md)
+
 **Transforming LMSYS RouteLLM from an academic prototype into a production-grade routing gateway.** Adds enterprise-grade caching, circuit breakers, full-chain observability, and async high-concurrency architecture — while preserving routing effectiveness.
 
 ## ✨ Key Features
