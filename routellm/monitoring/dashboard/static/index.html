@@ -116,7 +116,6 @@ function renderCards(s) {
     { label: '路由延迟', value: fmtMs(s.routing_latency_ms.mean),
       sub: `P99 ${fmtMs(s.routing_latency_ms.p99)}` },
     { label: '缓存命中率', value: fmtPct(s.cache_hit_rate) },
-    { label: '错误率', value: fmtPct(s.error_rate) },
   ];
   document.getElementById('cards').innerHTML = items.map(i => `
     <div class="card ${i.hl ? 'hl' : ''}">

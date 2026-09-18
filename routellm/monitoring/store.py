@@ -162,7 +162,6 @@ class MetricsStore:
                     for r in rows
                 )
                 cache_hits = sum(1 for r in rows if r["cache_hit"])
-                errors = sum(1 for r in rows if r["status"] == "error")
 
                 # 路由延迟（不含 LLM）
                 cur = c.execute(
@@ -180,7 +179,6 @@ class MetricsStore:
                     "cost_if_strong_usd": round(if_strong, 6),
                     "cost_saved_usd": round(max(0.0, if_strong - actual), 6),
                     "cache_hit_rate": round(cache_hits / total, 4),
-                    "error_rate": round(errors / total, 4),
                     "latency_ms": _percentiles(lats),
                     "routing_latency_ms": _percentiles(rls),
                 }

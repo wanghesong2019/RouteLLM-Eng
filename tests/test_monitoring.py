@@ -164,13 +164,13 @@ def test_store_cache_hit_rate(store):
     assert s["cache_hit_rate"] == pytest.approx(2 / 3, abs=1e-3)
 
 
-def test_store_error_rate(store):
-    """应统计错误率。"""
+def test_store_no_error_rate(store):
+    """summary 不应再包含 error_rate 字段（已从前端移除）。"""
     _sample(store, request_id="r1", status="success")
     _sample(store, request_id="r2", status="error")
 
     s = asyncio.run(store.summary())
-    assert s["error_rate"] == pytest.approx(0.5, abs=1e-3)
+    assert "error_rate" not in s
 
 
 def test_store_recent_requests(store):
