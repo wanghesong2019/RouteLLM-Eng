@@ -3,7 +3,7 @@
 背景：
     原实现 `routellm/routers/similarity_weighted/generate_embeddings.py`
     依赖 OpenAI `text-embedding-3-small` API（每次调用付费 + 外部依赖 +
-    网络抖动即失败）。改造目标：用 43 上自托管的 BAAI/bge-m3 本地权重
+    网络抖动即失败）。改造目标：用自托管的 BAAI/bge-m3 本地权重
     生成同样的 arena 向量，去掉外部 Embedding API 依赖。
 
 本测试聚焦改造后的本地编码器接口：

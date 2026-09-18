@@ -234,7 +234,7 @@ async def test_router_failure_degrades_to_weak(monkeypatch):
     回归背景：`_get_routed_model_for_completion` 原有兜底是「再调一次
     route()」——若路由器服务整体不可达（如 BERT 6070 挂掉），第二次调用
     同样失败，异常直接冒泡，永远到不了下游降级链。
-    实测在 43 上以 RemoteInferenceError 复现。
+    实测在真实部署环境以 RemoteInferenceError 复现。
     """
     c = _make_controller()
     calls: list[str] = []

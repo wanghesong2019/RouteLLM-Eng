@@ -176,7 +176,9 @@ data/
 *.sqlite3
 .env
 .env.*
+*.env
 !.env.example
+!*.example
 *.key
 secrets/
 .direnv/

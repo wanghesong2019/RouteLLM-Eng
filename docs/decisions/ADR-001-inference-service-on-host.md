@@ -28,7 +28,7 @@ class BERTRouter(Router):
 
 ## 决策
 
-**将 BERT / CausalLLM 的模型推理下沉到 host（43 号机）上的独立 FastAPI 服务，RouteLLM 容器通过 HTTP 调用。**
+**将 BERT / CausalLLM 的模型推理下沉到 host（部署机）上的独立 FastAPI 服务，RouteLLM 容器通过 HTTP 调用。**
 
 具体形态：
 
@@ -60,7 +60,7 @@ class BERTRouter(Router):
 
 排除理由：
 - 镜像体积 20GB+
-- 43 号机根分区剩 90G（虽然 `/mnt/data` 有 2.6T，但 Docker 默认数据目录在根分区）
+- 部署机根分区仅剩 90G（大容量数据盘虽有 2.6T，但 Docker 默认数据目录在根分区）
 - 每次改代码重建镜像需重新打包权重，迭代慢
 
 ### 方案 B（排除）：权重挂载进容器
@@ -86,7 +86,7 @@ class BERTRouter(Router):
 2. 该场景每次只生成 1 个 token，vLLM 的吞吐优势无法体现。
 3. 上游 `CausalLLMClassifier` 持有自定义模型对象，vLLM 未必兼容。
 
-实测数据支撑：vLLM 0.8.5 安装在 43 号机 `reflexicoder` 环境（已验证可用），但 `causal_llm` 模型在 hf-mirror 上仅 109 次下载（对比 bert 的 41472 次），兼容性风险高。
+实测数据支撑：vLLM 0.8.5 已在环境中验证可用，但 `causal_llm` 模型在 hf-mirror 上仅 109 次下载（对比 bert 的 41472 次），兼容性风险高。
 
 ## 影响
 
@@ -112,5 +112,5 @@ class BERTRouter(Router):
 
 ## 相关
 
-- 方案文档：`jobfinding/projects/RouteLLM-优化改造方案.md`（4.5 Docker 化、问题5 部署基建）
+- 相关章节：Docker 化部署、部署基建
 - 实验记录：`docs/experiments/2026-09-16-bert-router-validation.md`

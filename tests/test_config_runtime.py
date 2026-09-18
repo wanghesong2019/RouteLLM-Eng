@@ -212,10 +212,15 @@ def test_corrupt_file_does_not_crash(tmp_path, monkeypatch):
 
 
 def test_masked_hides_api_key(store):
-    """掩码视图不得包含明文 api_key。"""
-    store.update(api_key="sk-verysecret-1234567890")
+    """掩码视图不得包含明文 api_key。
+
+    使用「FAKE-KEY-FOR-TEST」这类显式假值，避免扫描工具把测试数据
+    误判为真实凭据（测试假值不应触发开源卫生告警）。
+    """
+    fake = "FAKE-KEY-FOR-TEST-0000"
+    store.update(api_key=fake)
     m = store.masked()
-    assert "sk-verysecret-1234567890" not in json.dumps(m), "掩码后不应出现明文"
+    assert fake not in json.dumps(m), "掩码后不应出现明文"
     assert "api_key" in m
 
 

@@ -29,10 +29,10 @@ docs/
 ### 13. 运行时配置热更新（Phase 3.5 → Phase 3.6）
 
 Phase 3.5 让下游 LLM 的 base_url / api_key / 模型名可运行时修改并立即生效，
-无需重启网关（详见 `docs/experiments/2026-09-17-runtime-config-hot-reload.md`）。
+无需重启网关。
 
 Phase 3.6 是用户在 Dashboard 实际使用后提出的四项修正
-（详见 `docs/experiments/2026-09-17-per-tier-config.md`）：
+：
 
 | # | 问题 | 修正 |
 |---|---|---|
@@ -55,14 +55,14 @@ Phase 3.6 是用户在 Dashboard 实际使用后提出的四项修正
 
 ### 1. 仓库拆分与基线建立
 
-从求职仓库 `jobfinding` 中拆出本仓库，作为独立工程仓库。
+本仓库作为独立工程仓库维护，与上游算法仓库分离。
 
 - 上游基线：`lmsys/routellm @ 0b64fdafe049e596a3f5657c219329f24af24198`（2024-08-11 快照）
 - 导入方式：与上游 zip 做 `diff -rq` 全量比对，确认无改动后入库
 - 规模：22 个 Python 文件 / 3006 行代码 / 108 个跟踪文件 / 17MB
-- 方案文档保留在 jobfinding（`projects/RouteLLM-优化改造方案.md`），本仓库承载实现
+- 设计文档随本仓库维护，代码与文档同源
 
-### 2. 环境与依赖验证（33 号机）
+### 2. 环境与依赖验证
 
 环境：Python 3.10.12 + venv，`pip install -e ".[serve]"`
 
@@ -114,11 +114,11 @@ collected 0 items
 
 **背景**：上游 `BERTRouter` / `CausalLLMRouter` 在进程内用 transformers 加载模型。若全部塞入容器，镜像会包含 CUDA torch + 模型权重。
 
-**决策**：模型推理下沉到 host（43 号机）独立 FastAPI 服务，RouteLLM 容器通过 HTTP 调用。推理服务独立实现，不 import `routellm` 包，保持解耦。
+**决策**：模型推理下沉到 host（部署机）独立 FastAPI 服务，RouteLLM 容器通过 HTTP 调用。推理服务独立实现，不 import `routellm` 包，保持解耦。
 
 理由与排除的备选方案见 `decisions/ADR-001-inference-service-on-host.md`。
 
-### 6. BERT 路由模型验证（43 号机）
+### 6. BERT 路由模型验证
 
 模型：`routellm/bert_gpt4_augmented`（1.1GB，实际架构为 **xlm-roberta**，非 BERT）
 
@@ -153,7 +153,7 @@ collected 0 items
 
 四个端点：`POST /v1/score`（批量评分，主接口）、`GET /health`、`GET /v1/models`、`GET /selfcheck`
 
-**实测（43 号机，RTX 4090）**：
+**实测（部署机，RTX 4090）**：
 
 | 指标 | 结果 |
 |---|---|
@@ -167,7 +167,7 @@ collected 0 items
 
 模型支持：`bert` 已实现验证；`causal_llm` 接口占位（权重 17GB，待接入）。
 
-详细记录见 `docs/experiments/2026-09-16-inference-api-validation.md`。
+
 
 ### 9. 链路打通：RemoteBERTRouter
 
@@ -195,16 +195,17 @@ collected 0 items
 
 **重要发现 — 影响 Docker 化部署位置**：
 
-43 号机防火墙**仅开放 SSH 端口**（20007/20031），6070/8090 从外部不可达。
+部署机防火墙**仅开放 SSH 端口**，推理服务端口从外部不可达（故采用 SSH 隧道 + 反向代理暴露）。
 
 ```
-33 → 43 探测:  22 filtered | 20007 OPEN | 20031 OPEN | 6070 filtered | 8090 filtered
+跨机探测: 非 SSH 端口均 filtered | SSH 端口 OPEN | 推理服务端口 filtered
 ```
 
-"容器在 33、推理在 43"的方案**不可行**（网络隔离）。→ **Docker 化时两者都部署在 43**：
-推理服务在 host，RouteLLM 容器经 `host.docker.internal:6070` 访问。
+**结论**：把网关与推理服务分置两台机器**不可行**（网络隔离）。
+→ **Docker 化时两者都部署在同一台**：推理服务在 host，
+RouteLLM 容器经 `host.docker.internal:<port>` 访问。
 
-详细记录见 `docs/experiments/2026-09-16-remote-router-e2e.md`。
+
 
 ### 10. 测试体系（从零建立）
 
@@ -223,7 +224,7 @@ tests/
 
 **新增容器化文件**：`Dockerfile`、`docker-compose.yml`、`requirements-gateway.txt`、`.dockerignore`、`.env.example`
 
-**镜像**：675MB（33 号机构建 → `docker save` → 传输 → 43 `docker load`）
+**镜像**：675MB（构建机构建 → `docker save` → 传输 → 部署机 `docker load`）
 
 关键：容器内**不含 torch/transformers/datasets**（惰性导入生效），镜像从 3GB+ 降到 675MB，构建从近 1 小时降到约 8 分钟。
 
@@ -241,7 +242,7 @@ tests/
 
 **新增 `/v1/models` 端点**（问题3，上游实测 404）
 
-**部署验证（43 号机全链路）**：
+**部署验证（部署机全链路）**：
 
 ```
 网关 → 容器 → host.docker.internal:6070 推理服务 → 路由决策 → 下游 LLM
@@ -252,12 +253,12 @@ tests/
 | 容器状态 | `Up (healthy)`，启动 7 秒 |
 | `GET /health` | `{"status":"online"}` |
 | `GET /v1/models` | `router-remote_bert-0.5` |
-| 容器 → host 推理服务 | HTTP 200（`host.docker.internal` → 172.18.0.1） |
+| 容器 → host 推理服务 | HTTP 200（经 `host.docker.internal` 网关） |
 | 全链路 5 个 prompt | 全部成功路由到下游并返回 |
 
-**新发现**：43 上 `taisure.com` 被 DNS 解析到本机公网 IP（115.233.223.42），
-而本机无 443 监听 → 不可达。下游 LLM 改用硅基流动（43 可达）。
-详见 `docs/experiments/2026-09-16-docker-deployment-e2e.md`。
+**新发现**：部署机的私有域名被 DNS 解析到本机公网 IP，而本机无 443 监听
+→ 不可达（NAT hairpin 行为）。下游 LLM 改走可达的公网 API。
+
 
 ### 12. 构建过程踩坑记录（43 网络环境）
 

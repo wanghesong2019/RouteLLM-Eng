@@ -29,14 +29,14 @@ class TestConfigModule:
 
         monkeypatch.setenv("ROUTELLM_STRONG_MODEL", "openai/qwen3.7-max")
         monkeypatch.setenv("ROUTELLM_WEAK_MODEL", "openai/qwen3.5-flash")
-        monkeypatch.setenv("ROUTELLM_API_BASE", "https://taisure.com/v1")
+        monkeypatch.setenv("ROUTELLM_API_BASE", "https://api.example.com/v1")
         monkeypatch.setenv("ROUTELLM_API_KEY", "sk-test")
         monkeypatch.setenv("ROUTELLM_ROUTERS", "remote_bert,random")
 
         s = Settings.from_env()
         assert s.strong_model == "openai/qwen3.7-max"
         assert s.weak_model == "openai/qwen3.5-flash"
-        assert s.api_base == "https://taisure.com/v1"
+        assert s.api_base == "https://api.example.com/v1"
         assert s.api_key == "sk-test"
         assert s.routers == ["remote_bert", "random"]
 
@@ -104,7 +104,7 @@ class TestValidation:
 
         monkeypatch.setenv("ROUTELLM_STRONG_MODEL", "openai/qwen3.7-max")
         monkeypatch.setenv("ROUTELLM_WEAK_MODEL", "openai/qwen3.5-flash")
-        monkeypatch.setenv("ROUTELLM_API_BASE", "https://taisure.com/v1")
+        monkeypatch.setenv("ROUTELLM_API_BASE", "https://api.example.com/v1")
         monkeypatch.setenv("ROUTELLM_API_KEY", "sk-test")
         monkeypatch.setenv("ROUTELLM_ROUTERS", "remote_bert")
 

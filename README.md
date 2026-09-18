@@ -1,109 +1,130 @@
 # RouteLLM-Eng
 
 > **上游基线**：LMSYS [RouteLLM](https://github.com/lmsys/routellm)（commit `0b64fdafe049e596a3f5657c219329f24af24198`，2024-08-11 快照）
-> 本仓库为工程化改造工作区，基于上游代码做生产化改造。
 
----
+RouteLLM-Eng 是把 LMSYS RouteLLM 从**学术原型**改造成**可部署、可观测、可容错**的生产级 LLM 路由网关的工程实现。
 
-## 这个仓库是什么
+上游框架只保证算法正确性，不考虑生产环境：无测试、无缓存、无可观测性、无容错、无部署基建。本仓库补齐这些方面，并保持与上游接口兼容。
 
-RouteLLM 是 LMSYS（Chatbot Arena 团队）开源的 LLM 路由框架：根据 query 难度，在强模型（GPT-4）和弱模型（Mixtral-8x7B）之间动态路由，在效果与成本间取平衡。
+## 这是什么
 
-上游是**学术项目**——只保证正确性，不考虑生产环境。本仓库的定位是把它改造成可部署、可观测、可容错的工程系统。
+RouteLLM 根据 query 难度，在强模型与弱模型之间动态路由，在效果与成本之间取得平衡。核心是学习一个 win-rate 预测器 `P(win_s | q)`，再通过阈值 α 决定路由到哪一侧：
 
-## 仓库关系
+```
+routed_model = strong if P(win_s | q) >= α else weak
+```
 
-| 仓库 | 定位 | 说明 |
-|------|------|------|
-| `RouteLLM-Eng`（本仓库） | 工程实现 | 代码、测试、评测产物 |
-| `jobfinding` | 求职材料 | 含 `projects/RouteLLM-优化改造方案.md`（改造方案文档，面试叙事） |
+阈值 α 的控制语义容易记反：**α 调高 → 更难满足 → 更多走弱 → 更省成本但质量下降**。α 是成本约束的严格程度，不是质量门槛。
 
-改造方案的**唯一权威依据**是 jobfinding 仓库中的方案文档，本仓库只承载实现。
+## 快速开始
 
-## 文档索引
-
-改造过程与决策全部留痕：
-
-| 路径 | 内容 |
-|------|------|
-| `docs/CHANGELOG.md` | 改造日志：按时间记录每一步、实测数据、发现的问题 |
-| `docs/experiments/` | 验证实验：脚本 + 实测输出 + 结论（含失败实验） |
-| `docs/decisions/` | 技术决策记录（ADR）：选了什么、排除了什么、为什么 |
-| `scripts/` | 一次性验证脚本与运维辅助脚本 |
-
-## 已确认的关键事实（实测）
-
-| 事实 | 说明 |
-|------|------|
-| 上游默认配置已失效 | 默认弱模型 `anyscale/...` 的 provider 已被 LiteLLM 移除，一请求即 500 |
-| 上游无自动化测试 | `pytest routellm/tests/` 收集 0 items，两个文件是手工冒烟脚本 |
-| `/v1/models` 缺失 | 实测 404，Cursor/Continue 类客户端无法预检模型 |
-| `OpenAI()` 模块级实例化 | `similarity_weighted/utils.py:11`，无 key 时整个包无法 import |
-| BERT 路由器区分度强 | 57 学科 MMLU 上 `corr(weak_acc, win_rate) = -0.7123` |
-| 下游模型名需 provider 前缀 | 裸模型名触发 litellm `BadRequestError`，须写 `openai/<model>` |
-
-详见 `docs/`。
-
-## 开发与环境纪律
-
-开发在三台机器上进行，职责分离：
-
-| 机器 | 角色 | 说明 |
-|------|------|------|
-| GitLab（`172.17.17.50:2424`） | 远程权威 | 唯一真实的代码源 |
-| **33 号机**（`icsr-ESC8000-G4`，8×RTX 3090） | 开发 + 测试闸门 | 所有代码修改在此进行，RED-GREEN 测试通过后才允许同步 |
-| **43 号机**（`server43-X640-G40`，4×RTX 4090） | 执行环境（只读） | 只负责跑真实负载与长跑实验，**不允许直接改代码** |
-
-**核心规则**：
-
-1. 所有代码修改在 33 号机进行，遵循 RED-GREEN TDD。
-2. 测试全绿后，才同步到 43 号机执行。
-3. 43 号机上任何临时改动（调参、改路径、修报错）都不算数，必须搬回 33 号机走测试流程——否则两端漂移，下次同步会被覆盖。
-4. 43 号机到 GitLab 网络不通（全端口 filtered），一切 pull/push 经由 33 号机中转。
-
-## 上游原始能力
+### Docker（推荐）
 
 ```bash
-# 安装（含服务与评测依赖）
+cp .env.example .env       # 填入强弱模型与凭据
+docker compose up -d       # 网关 :6060 + 监控面板 :8092
+```
+
+网关以 OpenAI 兼容协议暴露，任何兼容客户端可直接接入：
+
+```bash
+curl http://localhost:6060/v1/chat/completions \
+  -H "Authorization: Bearer $ROUTELLM_GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"router-bert-0.5",
+       "messages":[{"role":"user","content":"..."}]}'
+```
+
+请求体中的 `model` 字段是**路由规格**（`router-<name>-<threshold>`），不是下游模型名。
+
+### conda / venv
+
+```bash
 pip install -e ".[serve,eval]"
 
-# 启动 OpenAI 兼容服务（random 路由器不需要 GPU / 模型权重）
+# random 路由器不需要 GPU 与模型权重，可先验证链路
 python -m routellm.openai_server --routers random
 ```
 
-上游提供 5 种路由器：`random` / `mf`（矩阵分解）/ `bert` / `causal_llm`（LLaMA-3-8B 分类器）/ `sw_ranking`（相似度加权 Elo）。
+## 相对上游的改造
 
-## 已知问题（待改造）
+| 方向 | 内容 |
+|------|------|
+| 测试体系 | 从零建立，覆盖控制器 / 路由器 / 缓存 / 监控 / 鉴权 / 容错 / 异步化 |
+| 多级缓存 | 缓存 win-rate 结果（而非仅 embedding）。定位到瓶颈是 Elo 回归（占路由延迟 90%），命中后延迟降 4 个数量级 |
+| 可观测性 | FastAPI 中间件采集请求级指标 → SQLite → 自研 ECharts 面板；指标持久化，重启不丢 |
+| 容错 | 三态熔断器 + 指数退避重试 + 四级降级链（强 → 弱 → 缓存 → 503） |
+| 异步化 | Router 基类异步兜底 + `httpx.AsyncClient` 连接池复用，慢请求不再阻塞事件循环 |
+| 部署 | Dockerfile（惰性导入，镜像不含 torch）+ compose 双容器编排 |
+| 运行时配置 | 强弱模型 base_url / api_key / 模型名支持不重启热更新；不可变配置对象原子替换保证并发安全 |
+| 网关能力 | 补 `/v1/models` 端点；API key 中间件（Bearer + hmac 防时序侧信道）+ 白名单运维端点 |
+| 路由延迟优化 | 定位瓶颈为 `LogisticRegression.fit`，改用 `newton-cholesky` 求解器，端到端 394ms → 185ms |
 
-上游代码在生产视角下存在 6 类问题，详见 jobfinding 的改造方案文档：
+## 文档
 
-1. 路由计算无缓存，每次请求重复调 Embedding API
-2. 零可观测性，无 metrics / tracing / 结构化日志
-3. 无容错机制，上游故障即全盘不可用
-4. 同步阻塞，异步框架下慢请求阻塞事件循环
-5. 无部署基建，纯手工启动、API Key 走命令行
-6. 无网关能力，缺 `/v1/models` 端点
+| 路径 | 内容 |
+|------|------|
+| `docs/CHANGELOG.md` | 改造日志：每步的实际动作、实测数据、踩坑 |
+| `docs/decisions/` | 技术决策记录（ADR）：选了什么、排除了什么、为什么 |
+| `scripts/README.md` | 脚本索引 |
 
-## 目录结构（上游原始）
+## 上游已知缺陷（本项目修复）
 
+| 问题 | 说明 |
+|------|------|
+| 默认配置已失效 | 默认弱模型的 provider 已被 LiteLLM 移除，一请求即 500 |
+| 无自动化测试 | 上游两个 `test_*.py` 是 `if __name__ == "__main__"` 手工冒烟脚本，需真实 API key |
+| 缺 `/v1/models` | 客户端无法预检模型 |
+| `OpenAI()` 模块级实例化 | 无 key 时整个包无法 import |
+| 模型名硬编码 | 写在 argparse 默认值里 |
+| 能力无区分度场景 | 同质化任务（如 GSM8K 数学题）上路由收益极低，见下方评测说明 |
+
+## 评测
+
+复现论文指标（APGR / CPT 框架，RouteLLM, ICLR 2025）：
+
+```bash
+python scripts/eval_router_apgr.py --bert-url http://127.0.0.1:6070 ...
+python scripts/calibrate_threshold.py --bert-url http://127.0.0.1:6070 ...
 ```
-routellm/
-├── controller.py                路由控制器，封装 LiteLLM 调用
-├── openai_server.py             FastAPI OpenAI 兼容服务
-├── calibrate_threshold.py       阈值校准工具
-├── routers/                     5 种路由器实现
-│   ├── routers.py
-│   ├── matrix_factorization/
-│   ├── causal_llm/
-│   └── similarity_weighted/
-├── evals/                       评测框架 + 预计算响应数据（14M）
-└── tests/                       2 个基础测试
-examples/router_chat.py          Gradio 聊天界面
-config.example.yaml              路由器配置
+
+实测（MMLU 14042 题 / GSM8K 1319 题，强 GPT-4 系、弱 Mixtral 系对照数据）：
+
+| 数据集 | APGR | 95% CI | CPT(50%) |
+|--------|------|--------|----------|
+| MMLU | 0.5328 | [0.5157, 0.5496] | 44.30% |
+| GSM8K | 0.5294 | [0.4975, 0.5646] | 45.34% |
+
+随机路由基线 APGR ≈ 0.5 —— **APGR > 0.5 才说明路由有效**。
+
+**注意一个反直觉的结论**：APGR 不能用来选阈值。PGR 随走强比例单调递增（强模型整体更强），只最大化 APGR 的答案永远是「全走强」。选阈值必须用 **CPT**（达到目标 PGR 所需的最小走强比例）——先定质量目标，再反解成本。
+
+## 开源卫生
+
+仓库内置守卫脚本，检查凭据、内网指纹、部署留档产物：
+
+```bash
+python scripts/check_open_source_hygiene.py        # 扫工作区
+python scripts/check_open_source_hygiene.py --all  # 同时扫 git 历史
 ```
 
-22 个 Python 文件，3006 行代码。
+## 测试
+
+```bash
+pytest tests/ -q
+```
 
 ## 许可证
 
 沿用上游 MIT License，见 `LICENSE`。
+
+## 引用
+
+```bibtex
+@inproceedings{ong2025routellm,
+  title={RouteLLM: Learning to Route LLMs with Preference Data},
+  author={Ong, Isaac and Almahairi, Amjad and Wu, Vincent and Chiang, Wei-Lin and Wu, Tianhao and Gonzalez, Joseph E. and Kadous, M Waleed and Stoica, Ion},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2025}
+}
+```

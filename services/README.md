@@ -120,7 +120,7 @@ curl -s -X POST localhost:6071/v1/score \
 curl -s localhost:6071/selfcheck
 ```
 
-### 实测（43 号机，RTX 4090）
+### 实测（RTX 4090）
 
 | 项 | 值 |
 |---|---|
