@@ -188,6 +188,33 @@ async def test_resilience_disabled_keeps_legacy_behavior(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_router_decision_weak_is_not_marked_downgraded(monkeypatch):
+    """路由**判定**走弱 ≠ 降级。回归测试。
+
+    实测背景：开启容错后，正常请求（win_rate < threshold 走弱模型）被误标
+    `x-routellm-downgraded: true`。根因是 ResilientCaller 在 strong_fn=None
+    分支无从区分「路由决策走弱」与「强模型失败降级」，一律标 downgraded。
+    控制器必须显式纠正：只有「强模型失败后落到弱/缓存」才算降级。
+    """
+    c = _make_controller()
+    monkeypatch.setattr(c, "_get_routed_model_for_completion",
+                        lambda *a, **k: c.live_model_pair().weak)  # 路由判定走弱
+    c.resilience_enabled = True
+
+    async def fake_acompletion(**kwargs):
+        return _FakeResp("weak-by-routing")
+
+    monkeypatch.setattr("routellm.controller.acompletion", fake_acompletion)
+
+    res = await c.acompletion(model="router-random-0.9",
+                              messages=[{"role": "user", "content": "hi"}])
+    assert res.text == "weak-by-routing"
+    assert c.last_downgraded is False, (
+        "路由判定走弱不是降级，不应标记 downgraded"
+    )
+
+
+@pytest.mark.asyncio
 async def test_router_failure_degrades_to_weak(monkeypatch):
     """降级链①：路由器彻底故障时应走弱模型，而不是把异常抛给客户端。
 

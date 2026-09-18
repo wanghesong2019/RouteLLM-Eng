@@ -1,6 +1,6 @@
 from collections import defaultdict
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -34,6 +34,20 @@ class RoutingInfo:
 
 
 _ROUTING_INFO: ContextVar = ContextVar("routellm_routing_info", default=None)
+
+# 本次路由是否因**路由器故障**而被迫走弱（区别于正常的阈值判定走弱）。
+# 路由决策发生在 _get_routed_model_for_completion，而降级标记在下游调用后
+# 才确定，两者隔了一层，故用 ContextVar 把该信号传出来。
+_ROUTER_FALLBACK: ContextVar = ContextVar("routellm_router_fallback", default=False)
+
+
+def _set_router_fallback(flag: bool) -> None:
+    _ROUTER_FALLBACK.set(bool(flag))
+
+
+def is_router_fallback() -> bool:
+    """本上下文是否发生过「路由器故障 → 被迫走弱」。"""
+    return bool(_ROUTER_FALLBACK.get())
 
 
 def _set_routing_info(info: RoutingInfo) -> None:
@@ -318,12 +332,20 @@ class Controller:
                     max_attempts=self.resilience_max_attempts,
                 )
             else:
+                # 路由**判定**走弱：这是正常的阈值决策，不是降级。
+                # ResilientCaller 在该分支会标记 downgraded=True（因为它
+                # 无从知道这是路由决策还是降级），故此处显式纠正：
+                # 只有「强模型失败后落到弱模型/缓存」才算降级。
                 res = await caller.call_with_fallback(
                     strong_fn=None,
                     weak_fn=lambda: _invoke(weak_model, "weak"),
                     cache_key=cache_key,
                     max_attempts=self.resilience_max_attempts,
                 )
+                # 仅当「路由器故障被迫走弱」时才保留降级标记；
+                # 正常阈值判定走弱不算降级。
+                if res.source == "weak" and not is_router_fallback():
+                    res = dataclass_replace(res, downgraded=False)
             self.last_downgraded = bool(res.downgraded)
             return res.value
         except FallbackExhaustedError:
@@ -368,6 +390,7 @@ class Controller:
         live_pair = self.live_model_pair()
 
         t0 = _time.perf_counter()
+        _set_router_fallback(False)  # 逐请求重置
         router_instance = self.routers[router]
         # 显式算 win_rate 而非直接调 route() —— 后者只返回模型名，
         # 会把置信度丢掉（监控需要它）
@@ -388,7 +411,10 @@ class Controller:
             except Exception:  # noqa: BLE001
                 if not self.resilience_enabled:
                     raise
+                # 路由器整体故障 → 被迫走弱。这是**降级**，不是阈值判定，
+                # 必须标记出来供下游区分（见 _ROUTER_FALLBACK 说明）。
                 routed_model = live_pair.weak
+                _set_router_fallback(True)
             win_rate = 0.0
         latency_ms = (_time.perf_counter() - t0) * 1000
 
