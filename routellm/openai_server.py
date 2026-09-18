@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from routellm.config import DEFAULT_ROUTERS, ConfigError, Settings
 from routellm.controller import Controller, RoutingError
+from routellm.resilience import FallbackExhaustedError
 from routellm.routers.routers import ROUTER_CLS
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -64,7 +65,19 @@ async def lifespan(app):
         api_key=SETTINGS.api_key,
         progress_bar=True,
         config_store=_CONFIG_STORE,  # 注入后支持运行时热更新（方案文档 4.8）
+        # 容错与 Resilience（方案文档 4.3）—— 由环境变量控制，默认关闭
+        resilience_enabled=SETTINGS.resilience_enabled,
+        resilience_max_attempts=SETTINGS.resilience_max_attempts,
+        resilience_failure_threshold=SETTINGS.resilience_failure_threshold,
+        resilience_recovery_timeout=SETTINGS.resilience_recovery_timeout,
     )
+    if SETTINGS.resilience_enabled:
+        logging.info(
+            "容错已启用: failure_threshold=%s recovery_timeout=%ss max_attempts=%s",
+            SETTINGS.resilience_failure_threshold,
+            SETTINGS.resilience_recovery_timeout,
+            SETTINGS.resilience_max_attempts,
+        )
     yield
     CONTROLLER = None
 
@@ -271,15 +284,34 @@ async def create_chat_completion(request: ChatCompletionRequest):
             ErrorResponse(message=str(e)).model_dump(),
             status_code=400,
         )
+    except FallbackExhaustedError as e:
+        # 降级链全耗尽（方案文档 4.3 降级链④）：
+        # 503 而非 500 —— 这是**暂时性**上游不可用，客户端应稍后重试；
+        # Retry-After 给出建议间隔，避免客户端立刻重试形成风暴。
+        logging.warning("降级链耗尽，所有上游不可用: %s", e)
+        return JSONResponse(
+            ErrorResponse(message=str(e)).model_dump(),
+            status_code=503,
+            headers={"Retry-After": str(e.retry_after)},
+        )
 
     _capture_response_meta(request, res)
+    downgraded = bool(getattr(CONTROLLER, "last_downgraded", False))
 
     if request.stream:
-        return StreamingResponse(
+        resp = StreamingResponse(
             content=stream_response(res), media_type="text/event-stream"
         )
     else:
-        return JSONResponse(content=res.model_dump())
+        resp = JSONResponse(content=res.model_dump())
+
+    # 降级可观测（方案文档 4.3 关键约束）：客户端必须能分辨
+    # 「原始路由结果」与「降级兜底结果」，否则会把弱模型的回答
+    # 误当成正常路由结果。
+    if downgraded:
+        resp.headers["X-RouteLLM-Downgraded"] = "true"
+
+    return resp
 
 
 def _capture_request_meta(request: ChatCompletionRequest) -> None:

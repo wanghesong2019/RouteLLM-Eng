@@ -71,6 +71,16 @@ class Settings:
     sw_ranking_inference_url: Optional[str] = None
     verbose: bool = False
 
+    # ---- 容错与 Resilience（方案文档 4.3）----
+    # 默认关闭：不改变既有部署行为。开启后下游调用被 重试+熔断+降级 包裹。
+    resilience_enabled: bool = False
+    # 连续失败多少次开路
+    resilience_failure_threshold: int = 5
+    # 开路后多久转半开（秒）
+    resilience_recovery_timeout: float = 60.0
+    # 单次调用的总尝试次数（含首次）
+    resilience_max_attempts: int = 3
+
     # ------------------------------------------------------------------
     @classmethod
     def from_env(cls, env: Optional[dict] = None) -> "Settings":
@@ -96,6 +106,34 @@ class Settings:
                 f"{ENV_PREFIX}PORT 必须是整数，当前值: {port_raw!r}"
             ) from exc
 
+        def get_int(name: str, default: int) -> int:
+            raw = get(name)
+            if raw is None:
+                return default
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{ENV_PREFIX}{name} 必须是整数，当前值: {raw!r}"
+                ) from exc
+
+        def get_float(name: str, default: float) -> float:
+            raw = get(name)
+            if raw is None:
+                return default
+            try:
+                return float(raw)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"{ENV_PREFIX}{name} 必须是数字，当前值: {raw!r}"
+                ) from exc
+
+        def get_bool(name: str, default: bool = False) -> bool:
+            raw = get(name)
+            if raw is None:
+                return default
+            return raw.strip().lower() in ("1", "true", "yes", "on")
+
         return cls(
             strong_model=get("STRONG_MODEL"),
             weak_model=get("WEAK_MODEL"),
@@ -108,6 +146,14 @@ class Settings:
             inference_url=get("INFERENCE_URL"),
             sw_ranking_inference_url=get("SW_RANKING_INFERENCE_URL"),
             verbose=bool(get("VERBOSE")),
+            resilience_enabled=get_bool("RESILIENCE_ENABLED", False),
+            resilience_failure_threshold=get_int(
+                "RESILIENCE_FAILURE_THRESHOLD", 5
+            ),
+            resilience_recovery_timeout=get_float(
+                "RESILIENCE_RECOVERY_TIMEOUT", 60.0
+            ),
+            resilience_max_attempts=get_int("RESILIENCE_MAX_ATTEMPTS", 3),
         )
 
     # ------------------------------------------------------------------
@@ -145,6 +191,24 @@ class Settings:
         if self.port <= 0 or self.port > 65535:
             raise ConfigError(f"端口非法: {self.port}")
 
+        # 容错参数（方案文档 4.3）：仅在启用时校验，未启用不影响既有行为
+        if self.resilience_enabled:
+            if self.resilience_failure_threshold <= 0:
+                raise ConfigError(
+                    f"{ENV_PREFIX}RESILIENCE_FAILURE_THRESHOLD 必须 > 0，"
+                    f"当前: {self.resilience_failure_threshold}"
+                )
+            if self.resilience_recovery_timeout <= 0:
+                raise ConfigError(
+                    f"{ENV_PREFIX}RESILIENCE_RECOVERY_TIMEOUT 必须 > 0，"
+                    f"当前: {self.resilience_recovery_timeout}"
+                )
+            if self.resilience_max_attempts < 1:
+                raise ConfigError(
+                    f"{ENV_PREFIX}RESILIENCE_MAX_ATTEMPTS 必须 >= 1，"
+                    f"当前: {self.resilience_max_attempts}"
+                )
+
     @staticmethod
     def _check_provider_prefix(label: str, model: Optional[str]) -> None:
         if not model:
@@ -178,6 +242,8 @@ class Settings:
             "routers": self.routers,
             "host": self.host,
             "port": self.port,
+            # 容错状态（方案文档 4.3）——便于运维从启动日志确认是否生效
+            "resilience_enabled": self.resilience_enabled,
             "inference_url": self.inference_url,
             "sw_ranking_inference_url": self.sw_ranking_inference_url,
             "config_path": self.config_path,

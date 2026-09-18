@@ -67,6 +67,12 @@ c = Controller(
     weak_model='openai/weak',
     config={'remote_bert': {'base_url': 'http://127.0.0.1:6070'}},
 )
+
+# 容错模块（方案文档 4.3）不得引入重型依赖：
+# resilience/ 按异常类名语义判定可重试性，刻意不 import litellm。
+import routellm.resilience as rz
+assert rz.CircuitBreaker and rz.ResilientCaller, 'resilience 未导出核心类'
+_ = rz.CircuitBreaker(failure_threshold=2, recovery_timeout=1)
 print('LAZY_IMPORT_OK')
 """
         p = subprocess.run(

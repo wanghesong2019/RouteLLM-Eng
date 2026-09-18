@@ -190,6 +190,11 @@ class Controller:
         api_key: Optional[str] = None,
         progress_bar: bool = False,
         config_store: Optional[Any] = None,
+        resilience_enabled: bool = False,
+        resilience_cache: Optional[Any] = None,
+        resilience_max_attempts: int = 3,
+        resilience_failure_threshold: int = 5,
+        resilience_recovery_timeout: float = 60.0,
     ):
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
@@ -201,6 +206,21 @@ class Controller:
         # 模型名将**按请求现取**，从而支持不重启热更新（方案文档 4.8）。
         # 未注入时回落到构造参数，行为与改造前一致（向后兼容）。
         self.config_store = config_store
+
+        # ---- 容错与 Resilience（方案文档 4.3）----
+        # 默认关闭：不改变既有部署行为。开启后，下游调用被 重试 + 熔断 + 降级
+        # 包裹（强 → 弱 → 缓存 → 503）。
+        self.resilience_enabled = resilience_enabled
+        self.resilience_cache = resilience_cache
+        self.resilience_max_attempts = resilience_max_attempts
+        self.resilience_failure_threshold = resilience_failure_threshold
+        self.resilience_recovery_timeout = resilience_recovery_timeout
+        # 熔断器按 "router|tier" 分片 —— 不同路由器、强弱两侧互不影响
+        # （方案文档 4.3 步骤 5：按路由器名和模型名分别实例化）
+        self._breakers: dict[str, Any] = {}
+        # 最近一次调用是否降级（供 server 层写 X-RouteLLM-Downgraded 头）。
+        # 用 ContextVar 语义由 server 层保证隔离；此处存实例属性 + 逐请求重置。
+        self.last_downgraded = False
 
         if config is None:
             config = GPT_4_AUGMENTED_CONFIG
@@ -221,6 +241,94 @@ class Controller:
                 create=self.completion, acreate=self.acompletion
             )
         )
+
+    def _get_breaker(self, router: str, tier: str):
+        """取（或创建）该「路由器 × 档位」分片的熔断器。
+
+        分片理由：不同路由器的健康度不同；强模型挂了不代表弱模型也挂 ——
+        共用一个熔断器会让一侧的故障错误地掐断另一侧的正常流量。
+        """
+        from routellm.resilience import CircuitBreaker
+
+        key = f"{router}|{tier}"
+        cb = self._breakers.get(key)
+        if cb is None:
+            cb = CircuitBreaker(
+                failure_threshold=self.resilience_failure_threshold,
+                recovery_timeout=self.resilience_recovery_timeout,
+            )
+            self._breakers[key] = cb
+        return cb
+
+    def _cache_key_for_messages(self, messages: list) -> str:
+        """降级链③的缓存兜底 key。
+
+        复用 cache/keys.py 的 result_key 约定（routellm:res:<hash>），
+        避免引入第二套 key 语义。
+        """
+        import json as _json
+
+        from routellm.cache.keys import result_key
+
+        try:
+            payload = _json.dumps(messages, sort_keys=True, ensure_ascii=False)
+        except (TypeError, ValueError):
+            payload = str(messages)
+        return result_key(payload)
+
+    async def _call_downstream(
+        self, *, router: str, routed_model: str, tier: str, messages: list, kwargs: dict
+    ):
+        """在容错保护下调用下游 LLM（方案文档 4.3 主流程）。
+
+        降级链：强 → 弱 → 缓存 → FallbackExhaustedError。
+        未启用容错时走裸调用（保持改造前行为）。
+        """
+        live_pair = self.live_model_pair()
+        strong_model = live_pair.strong
+        weak_model = live_pair.weak
+        cache_key = self._cache_key_for_messages(messages)
+
+        if not self.resilience_enabled:
+            kw = self.downstream_kwargs(routed_model, tier)
+            return await acompletion(**kw, **kwargs)
+
+        from routellm.resilience import FallbackExhaustedError, ResilientCaller
+
+        caller = ResilientCaller(
+            cache=self.resilience_cache,
+            strong_breaker=self._get_breaker(router, "strong"),
+            weak_breaker=self._get_breaker(router, "weak"),
+        )
+
+        async def _invoke(model_name: str, tier_name: str):
+            kw = self.downstream_kwargs(model_name, tier_name)
+            return await acompletion(**kw, **kwargs)
+
+        # 路由实际选中的是强模型时，才把「强」作为首选项；
+        # 路由判定走弱时 strong_fn=None，直接走弱（不浪费一次强模型调用）。
+        use_strong_first = (routed_model == strong_model) and (strong_model != weak_model)
+
+        try:
+            if use_strong_first:
+                res = await caller.call_with_fallback(
+                    strong_fn=lambda: _invoke(strong_model, "strong"),
+                    weak_fn=lambda: _invoke(weak_model, "weak"),
+                    cache_key=cache_key,
+                    max_attempts=self.resilience_max_attempts,
+                )
+            else:
+                res = await caller.call_with_fallback(
+                    strong_fn=None,
+                    weak_fn=lambda: _invoke(weak_model, "weak"),
+                    cache_key=cache_key,
+                    max_attempts=self.resilience_max_attempts,
+                )
+            self.last_downgraded = bool(res.downgraded)
+            return res.value
+        except FallbackExhaustedError:
+            self.last_downgraded = True
+            raise
 
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
@@ -312,26 +420,6 @@ class Controller:
         return self.routers[router].route(prompt, threshold, self.model_pair)
 
     # Matches OpenAI's Chat Completions interface, but also supports optional router and threshold args
-    # If model name is present, attempt to parse router and threshold using it, otherwise, use the router and threshold args
-    def completion(
-        self,
-        *,
-        router: Optional[str] = None,
-        threshold: Optional[float] = None,
-        **kwargs,
-    ):
-        if "model" in kwargs:
-            router, threshold = self._parse_model_name(kwargs["model"])
-
-        self._validate_router_threshold(router, threshold)
-        kwargs["model"] = self._get_routed_model_for_completion(
-            kwargs["messages"], router, threshold
-        )
-        # 用 live 配置构造下游参数 —— 支持运行时热更新（方案文档 4.8）
-        kw = self.downstream_kwargs(kwargs["model"])
-        kwargs.pop("model")
-        return completion(**kw, **kwargs)
-
     # Matches OpenAI's Async Chat Completions interface, but also supports optional router and threshold args
     async def acompletion(
         self,
@@ -344,10 +432,57 @@ class Controller:
             router, threshold = self._parse_model_name(kwargs["model"])
 
         self._validate_router_threshold(router, threshold)
-        kwargs["model"] = self._get_routed_model_for_completion(
-            kwargs["messages"], router, threshold
+        self.last_downgraded = False  # 逐请求重置降级标记
+
+        messages = kwargs["messages"]
+        routed_model = self._get_routed_model_for_completion(
+            messages, router, threshold
         )
-        # 用 live 配置构造下游参数 —— 支持运行时热更新（方案文档 4.8）
-        kw = self.downstream_kwargs(kwargs["model"])
-        kwargs.pop("model")
-        return await acompletion(**kw, **kwargs)
+        live_pair = self.live_model_pair()
+        # 判定路由落在哪一侧 —— 决定降级链的首选项与凭据档位
+        tier = "strong" if routed_model == live_pair.strong else "weak"
+
+        # 构造下游参数时不把 model 传给 litellm（由 _call_downstream 决定）
+        call_kwargs = {k: v for k, v in kwargs.items() if k != "model"}
+        return await self._call_downstream(
+            router=router, routed_model=routed_model, tier=tier,
+            messages=messages, kwargs=call_kwargs,
+        )
+
+    # Matches OpenAI's Chat Completions interface, but also supports optional router and threshold args
+    def completion(
+        self,
+        *,
+        router: Optional[str] = None,
+        threshold: Optional[float] = None,
+        **kwargs,
+    ):
+        """同步调用。容错启用时仍走异步降级链（内部同步等待）。"""
+        if "model" in kwargs:
+            router, threshold = self._parse_model_name(kwargs["model"])
+
+        self._validate_router_threshold(router, threshold)
+
+        if not self.resilience_enabled:
+            self.last_downgraded = False
+            routed_model = self._get_routed_model_for_completion(
+                kwargs["messages"], router, threshold
+            )
+            kw = self.downstream_kwargs(routed_model)
+            kwargs.pop("model", None)
+            return completion(**kw, **kwargs)
+
+        # 容错路径：复用异步实现，避免两套降级逻辑漂移
+        import asyncio as _asyncio
+
+        coro = self.acompletion(router=router, threshold=threshold, **kwargs)
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            return _asyncio.run(coro)
+        # 已在事件循环中：不能 asyncio.run，交给调用方用 acreate
+        coro.close()
+        raise RoutingError(
+            "completion() cannot be used with resilience enabled inside a "
+            "running event loop; use acompletion() instead."
+        )
