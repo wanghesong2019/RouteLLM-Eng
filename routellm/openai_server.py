@@ -9,7 +9,7 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import AsyncGenerator, Dict, List, Literal, Optional, Union
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
 
 import fastapi
 import shortuuid
@@ -221,8 +221,8 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = False
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = 1.0
-    tools: Optional[List[Dict[str, Union[str, int, float]]]] = None
-    tool_choice: Optional[str] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
     user: Optional[str] = None
 
 
