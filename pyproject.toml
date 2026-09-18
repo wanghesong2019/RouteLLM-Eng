@@ -31,6 +31,7 @@ dev = ["black", "isort", "pre-commit"]
 [project.urls]
 "Homepage" = "https://github.com/lm-sys/RouteLLM"
 "Bug Tracker" = "https://github.com/lm-sys/RouteLLM/issues"
+"Engineering" = "https://github.com/lm-sys/RouteLLM-Eng"
 
 [tool.isort]
 profile = "black"

@@ -32,7 +32,7 @@ win_rate = 1 - sum(softmax(logits)[-2:])
 ```bash
 python services/inference_server.py \
     --model-type bert \
-    --model-path /mnt/data/wanghesong/routellm/models/bert_gpt4_augmented \
+    --model-path /path/to/models/bert_gpt4_augmented \
     --gpu 0 \
     --port 6070
 ```

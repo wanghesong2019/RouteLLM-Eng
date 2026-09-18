@@ -9,53 +9,19 @@
 # 若确实需要在容器内跑进程内推理（bert / causal_llm / sw_ranking / mf），
 # 用 docker-compose.full.yml 或构建 full 阶段（见文件末尾注释）。
 #
-# 构建（在 43 号机）：
+# 构建：
 #   docker build -t routellm-eng:dev .
-#
-# 网络约束（43 号机实测，见 docs/CHANGELOG.md）：
-#   - 无法直连 Docker Hub → 基础镜像走 docker.m.daocloud.io
-#   - 无法直连 deb.debian.org → Debian 源换阿里云镜像
-#   - 容器内 DNS 可能只返回 IPv6 而本机无 IPv6 出口 → 强制 Python 走 IPv4
 
-FROM docker.m.daocloud.io/library/python:3.10-slim
+FROM python:3.10-slim
 
 LABEL org.opencontainers.image.title="routellm-eng" \
       org.opencontainers.image.description="RouteLLM gateway（模型推理下沉至 host）"
 
-# ---- Debian 源换国内镜像 + 装最小系统依赖 ---------------------------------
+# ---- 系统依赖 -----------------------------------------------------------
 # 只装 curl（健康检查用）。不装 gcc/g++ —— 依赖均为预编译 wheel。
-# 初版误装 gcc 导致 apt 阶段卡死 6 分钟以上。
-RUN set -eux; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
-    fi; \
-    if [ -f /etc/apt/sources.list ]; then \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
-    fi; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends curl ca-certificates; \
-    rm -rf /var/lib/apt/lists/*
-
-# ---- Python 源换清华镜像 --------------------------------------------------
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-    && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn \
-    && pip config set global.timeout 60 \
-    && pip config set global.retries 5
-
-# 强制 Python 解析只保留 IPv4（pip 依赖 urllib3，无 Happy Eyeballs 回退；
-# 本机无 IPv6 出口时会导致 pip 无限等待）
-RUN printf '%s\n' \
-    'import socket as _s' \
-    '_orig_gai = _s.getaddrinfo' \
-    'def _gai_v4(*args, **kwargs):' \
-    '    try:' \
-    '        res = _orig_gai(*args, **kwargs)' \
-    '    except Exception:' \
-    '        return _orig_gai(*args, **kwargs)' \
-    '    v4 = [r for r in res if r[0] == _s.AF_INET]' \
-    '    return v4 or res' \
-    '_s.getaddrinfo = _gai_v4' \
-    > /usr/local/lib/python3.10/sitecustomize.py
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # ---- Python 依赖（网关切片，不含 torch）------------------------------------
 WORKDIR /app
