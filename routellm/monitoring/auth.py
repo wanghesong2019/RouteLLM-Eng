@@ -21,8 +21,11 @@
 
 安全约定
 --------
-- 白名单端点免鉴权：/health（容器探针）、/dashboard、/metrics、/api/*（运维面板）
+- 白名单端点免鉴权：/health（容器探针）、/dashboard、/config、/metrics、
+  /api/*（运维面板）
   —— 这些是运维用途，不应要求业务 key，否则探针和面板都不可用。
+  注意 /dashboard 与 /config 都是面板页面路由（导航链接整页跳转带不了
+  Authorization），必须成对列入，否则面板导航点击即 401。
 - 业务接口（/v1/*）一律校验。
 - 401 响应体沿用 OpenAI 错误格式，客户端能正确解析。
 """
@@ -40,8 +43,14 @@ logger = logging.getLogger(__name__)
 ENV_KEY = "ROUTELLM_GATEWAY_API_KEY"
 
 # 免鉴权路径（精确匹配）与前缀（前缀匹配）
-WHITELIST_EXACT = {"/", "/health", "/dashboard", "/metrics", "/docs",
-                   "/openapi.json", "/redoc"}
+#
+# /config 与 /dashboard 必须成对出现：这两个都是面板自身的页面路由
+# （dashboard 页面导航里有 <a href="/config">运行时配置</a>）。
+# 浏览器整页跳转带不了 Authorization header，所以面板页面一旦不在白名单，
+# 用户点击导航就会看到 401 invalid_api_key —— 实测公网部署时踩到过。
+# 注：真正读写配置的 /api/config 由 WHITELIST_PREFIX 的 "/api/" 覆盖。
+WHITELIST_EXACT = {"/", "/health", "/dashboard", "/config", "/metrics",
+                   "/docs", "/openapi.json", "/redoc"}
 WHITELIST_PREFIX = ("/api/", "/docs/", "/static/")
 
 
