@@ -70,7 +70,7 @@ services:
       # ---- 级联前置过滤（方案文档 2）----
       # 默认开启：简单 Query 绕过 BERT RPC（省 10-30ms）。置 false 回退改造前行为。
       ROUTELLM_FAST_PATH_ENABLED: "${ROUTELLM_FAST_PATH_ENABLED:-true}"
-      ROUTELLM_FAST_PATH_SHORT_TEXT_THRESHOLD: "${ROUTELLM_FAST_PATH_SHORT_TEXT_THRESHOLD:-15}"
+      ROUTELLM_FAST_PATH_SHORT_TEXT_THRESHOLD: "${ROUTELLM_FAST_PATH_SHORT_TEXT_THRESHOLD:-8}"
 
       # ---- 自适应阈值闭环（方案文档 3）----
       # 默认开启（交付即生效）。τ(t) = clip(τ_base + K_p × 成本超标率, τ_min, τ_max)。

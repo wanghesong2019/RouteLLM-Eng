@@ -84,8 +84,10 @@ class Settings:
     # ---- 级联前置过滤（方案文档 2）----
     # L1 快速通道：简单 Query 绕过 BERT RPC。默认开启；置 false 即回到改造前行为。
     fast_path_enabled: bool = True
-    # 极短文本阈值（字符数 ≤ 此值 → 直通弱模型）
-    fast_path_short_text_threshold: int = 15
+    # 极短文本阈值（字符数 ≤ 此值 → 视为寒暄直通弱模型）。
+    # 8 而非 15：短 ≠ 简单，「解释下傅里叶变换」仅 8 字符却是正经提问。
+    # 另配合 fast_path 的 imperative_patterns 二次排除指令性表述。
+    fast_path_short_text_threshold: int = 8
 
     # ---- 自适应阈值闭环（方案文档 3）----
     # 默认开启（交付即生效）。置 false 时 Controller 退回静态阈值判决。
@@ -176,7 +178,7 @@ class Settings:
             # 默认开启：改造交付即生效。需回退改造前行为时显式置 false。
             fast_path_enabled=get_bool("FAST_PATH_ENABLED", True),
             fast_path_short_text_threshold=get_int(
-                "FAST_PATH_SHORT_TEXT_THRESHOLD", 15
+                "FAST_PATH_SHORT_TEXT_THRESHOLD", 8
             ),
             adaptive_threshold_enabled=get_bool("ADAPTIVE_THRESHOLD_ENABLED", True),
             adaptive_tau_base=get_float("ADAPTIVE_TAU_BASE", 0.5),
