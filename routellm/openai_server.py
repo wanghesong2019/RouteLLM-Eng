@@ -109,6 +109,12 @@ async def lifespan(app):
         _WINDOW_COUNTER = WindowMetricsCounter(
             window_sec=SETTINGS.adaptive_window_sec
         )
+        # 从指标库回填窗口内历史 —— 计数器是进程内内存态，重启即归零，
+        # 不回填会让 τ 在重启瞬间错误地回落到 τ_base。失败仅告警，不阻断启动。
+        try:
+            await _WINDOW_COUNTER.warmup(_METRICS_STORE)
+        except Exception as _we:  # noqa: BLE001
+            logging.warning("窗口计数器回填失败（按冷启动处理）: %s", _we)
         _ADAPTIVE_THRESHOLD = AdaptiveThresholdController(
             AdaptiveThresholdConfig(
                 enabled=True,

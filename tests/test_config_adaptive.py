@@ -16,7 +16,8 @@ def test_defaults_present():
     assert s.adaptive_tau_min == 0.35
     assert s.adaptive_tau_max == 0.75
     assert s.adaptive_k_p == 1.0
-    assert s.adaptive_budget_tokens_per_min == 0.0
+    # 预算默认 1400 tok/min（单人交互对话口径），使闭环开箱即生效
+    assert s.adaptive_budget_tokens_per_min == 1400.0
     assert s.adaptive_latency_sla_ms == 0.0
     assert s.adaptive_sample_interval_sec == 5.0
     assert s.adaptive_window_sec == 60.0

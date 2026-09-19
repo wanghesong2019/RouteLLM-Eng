@@ -94,7 +94,7 @@ class Settings:
     adaptive_tau_min: float = 0.35
     adaptive_tau_max: float = 0.75
     adaptive_k_p: float = 1.0
-    adaptive_budget_tokens_per_min: float = 0.0
+    adaptive_budget_tokens_per_min: float = 1400.0
     adaptive_latency_sla_ms: float = 0.0
     adaptive_sample_interval_sec: float = 5.0
     adaptive_window_sec: float = 60.0
@@ -184,7 +184,7 @@ class Settings:
             adaptive_tau_max=get_float("ADAPTIVE_TAU_MAX", 0.75),
             adaptive_k_p=get_float("ADAPTIVE_K_P", 1.0),
             adaptive_budget_tokens_per_min=get_float(
-                "ADAPTIVE_BUDGET_TOKENS_PER_MIN", 0.0
+                "ADAPTIVE_BUDGET_TOKENS_PER_MIN", 1400.0
             ),
             adaptive_latency_sla_ms=get_float("ADAPTIVE_LATENCY_SLA_MS", 0.0),
             adaptive_sample_interval_sec=get_float(

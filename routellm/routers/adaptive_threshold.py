@@ -302,6 +302,49 @@ class WindowMetricsCounter:
         """兼容调用方按 prompt/completion 分别上报的写法。"""
         self.record(int(prompt_tokens or 0) + int(completion_tokens or 0))
 
+    async def warmup(self, store: Any) -> int:
+        """启动时从 MetricsStore 回填窗口内的历史样本。
+
+        为什么需要：本计数器是**进程内**内存态，容器重启即归零。归零后
+        cost_rate 变成 0 → τ 回落到 τ_base（判据短暂失真），且关闭期间的真实
+        消耗被"遗忘"。回填窗口内明细即可让闭环在重启后立刻恢复正确的判据。
+
+        仅回填窗口内样本 —— 回填更早的数据会把速率算低（分母是窗口秒数），
+        等于把闭环钝化。
+
+        Returns:
+            回填的样本条数；失败时返回 0（不抛异常：恢复失败应降级为冷启动，
+            绝不能让计数器故障拖垮网关启动）。
+        """
+        if store is None:
+            return 0
+        try:
+            since = time.time() - self.window_sec
+            samples = store.window_samples(since)
+            if asyncio.iscoroutine(samples):
+                samples = await samples
+        except Exception as e:  # noqa: BLE001
+            logger.warning("窗口计数器回填失败（按冷启动处理）: %s", e)
+            return 0
+
+        n = 0
+        for s in samples or []:
+            try:
+                self.record(
+                    int(s.get("tokens") or 0),
+                    float(s.get("latency_ms") or 0.0),
+                    ts=float(s["timestamp"]),
+                )
+                n += 1
+            except Exception:  # noqa: BLE001
+                continue
+        if n:
+            logger.info(
+                "窗口计数器已从指标库回填 %d 条窗口内样本（window=%ss）",
+                n, self.window_sec,
+            )
+        return n
+
     def _prune(self, since: float) -> None:
         """丢弃窗口外的样本（按时间戳递增，从头部弹，摊还 O(1)）。"""
         cut = 0

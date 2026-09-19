@@ -75,14 +75,14 @@ services:
       # ---- 自适应阈值闭环（方案文档 3）----
       # 默认开启（交付即生效）。τ(t) = clip(τ_base + K_p × 成本超标率, τ_min, τ_max)。
       # 硬质防线：s ≥ τ_max 强制走强；预算耗尽 + 高难请求 → 429 背压。
-      # budget/sla 默认 0 = 不限，此时 τ 恒为 τ_base（闭环不介入，行为可预期）；
-      # 需要按预算/延迟调控时再设具体值。
+      # 预算 1400 tok/min ≈ 单人交互对话强度（约每 30s 一轮，每轮 ~700 tok）。
+      # 设 0 = 不限，此时 τ 恒为 τ_base（闭环不介入）。
       ROUTELLM_ADAPTIVE_THRESHOLD_ENABLED: "${ROUTELLM_ADAPTIVE_THRESHOLD_ENABLED:-true}"
       ROUTELLM_ADAPTIVE_TAU_BASE: "${ROUTELLM_ADAPTIVE_TAU_BASE:-0.5}"
       ROUTELLM_ADAPTIVE_TAU_MIN: "${ROUTELLM_ADAPTIVE_TAU_MIN:-0.35}"
       ROUTELLM_ADAPTIVE_TAU_MAX: "${ROUTELLM_ADAPTIVE_TAU_MAX:-0.75}"
       ROUTELLM_ADAPTIVE_K_P: "${ROUTELLM_ADAPTIVE_K_P:-1.0}"
-      ROUTELLM_ADAPTIVE_BUDGET_TOKENS_PER_MIN: "${ROUTELLM_ADAPTIVE_BUDGET_TOKENS_PER_MIN:-0}"
+      ROUTELLM_ADAPTIVE_BUDGET_TOKENS_PER_MIN: "${ROUTELLM_ADAPTIVE_BUDGET_TOKENS_PER_MIN:-1400}"
       ROUTELLM_ADAPTIVE_LATENCY_SLA_MS: "${ROUTELLM_ADAPTIVE_LATENCY_SLA_MS:-0}"
       ROUTELLM_ADAPTIVE_SAMPLE_INTERVAL_SEC: "${ROUTELLM_ADAPTIVE_SAMPLE_INTERVAL_SEC:-5}"
       ROUTELLM_ADAPTIVE_WINDOW_SEC: "${ROUTELLM_ADAPTIVE_WINDOW_SEC:-60}"

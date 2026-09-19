@@ -118,11 +118,46 @@ class MetricsStore:
         """聚合统计（Dashboard 顶部卡片 + 图表数据）。"""
         return await asyncio.to_thread(self._summary_sync)
 
+    async def window_samples(self, since: float) -> List[Dict[str, Any]]:
+        """查询窗口内的**逐条**样本（供窗口计数器重启回填）。
+
+        与 window_stats 的区别：这里返回明细而非聚合 —— 计数器需要把每条
+        样本重新放回自己的滚动窗口与延迟直方图，聚合值无法还原分布。
+
+        Returns:
+            [{"timestamp": float, "tokens": int, "latency_ms": float}, ...]
+        """
+        return await asyncio.to_thread(self._window_samples_sync, since)
+
+    def _window_samples_sync(self, since: float) -> List[Dict[str, Any]]:
+        with self._lock:
+            c = self._conn()
+            try:
+                self._init_schema(c)
+                cur = c.execute(
+                    "SELECT timestamp, prompt_tokens, completion_tokens, "
+                    "total_latency_ms FROM requests "
+                    "WHERE timestamp >= ? ORDER BY timestamp",
+                    (since,),
+                )
+                out: List[Dict[str, Any]] = []
+                for r in cur.fetchall():
+                    pt = r["prompt_tokens"] or 0
+                    ct = r["completion_tokens"] or 0
+                    out.append(
+                        {
+                            "timestamp": float(r["timestamp"]),
+                            "tokens": int(pt + ct),
+                            "latency_ms": float(r["total_latency_ms"] or 0.0),
+                        }
+                    )
+                return out
+            finally:
+                if self._mem_conn is None:
+                    c.close()
+
     async def window_stats(self, since: float) -> Dict[str, Any]:
         """查询指定时间点以来的聚合统计（供自适应阈值控制器使用）。
-
-        Args:
-            since: Unix 时间戳，查询 [since, now] 窗口
 
         Returns:
             {
