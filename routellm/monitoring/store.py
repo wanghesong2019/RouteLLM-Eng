@@ -118,6 +118,75 @@ class MetricsStore:
         """聚合统计（Dashboard 顶部卡片 + 图表数据）。"""
         return await asyncio.to_thread(self._summary_sync)
 
+    async def window_stats(self, since: float) -> Dict[str, Any]:
+        """查询指定时间点以来的聚合统计（供自适应阈值控制器使用）。
+
+        Args:
+            since: Unix 时间戳，查询 [since, now] 窗口
+
+        Returns:
+            {
+                "tokens_per_min": float,     # 窗口内每分钟 Token 消耗
+                "latency_p90": float,        # 窗口内 P90 总延迟
+                "strong_count": int,         # 窗口内走强模型次数
+                "weak_count": int,           # 窗口内走弱模型次数
+                "total_count": int,          # 窗口内总请求数
+                "total_cost_usd": float,     # 窗口内实际成本
+            }
+        """
+        return await asyncio.to_thread(self._window_stats_sync, since)
+
+    def _window_stats_sync(self, since: float) -> Dict[str, Any]:
+        with self._lock:
+            c = self._conn()
+            try:
+                self._init_schema(c)
+                cur = c.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(prompt_tokens), 0) AS pt,
+                        COALESCE(SUM(completion_tokens), 0) AS ct,
+                        COUNT(*) AS n,
+                        SUM(CASE WHEN routed_model = 'strong' THEN 1 ELSE 0 END) AS sn,
+                        COALESCE(SUM(estimated_cost), 0) AS cost
+                    FROM requests
+                    WHERE timestamp >= ?
+                    """,
+                    (since,),
+                )
+                row = cur.fetchone()
+                pt = row["pt"] or 0
+                ct = row["ct"] or 0
+                n = row["n"] or 0
+                sn = row["sn"] or 0
+                cost = row["cost"] or 0.0
+
+                # P90 延迟（窗口内）
+                cur = c.execute(
+                    "SELECT total_latency_ms AS v FROM requests "
+                    "WHERE timestamp >= ? AND total_latency_ms IS NOT NULL "
+                    "ORDER BY v",
+                    (since,),
+                )
+                lats = [r["v"] for r in cur.fetchall()]
+                p90 = _percentile(lats, 0.90)
+
+                now = time.time()
+                minutes = max((now - since) / 60.0, 0.1)
+                tokens = pt + ct
+
+                return {
+                    "tokens_per_min": tokens / minutes,
+                    "latency_p90": p90,
+                    "strong_count": int(sn),
+                    "weak_count": int(n - sn),
+                    "total_count": int(n),
+                    "total_cost_usd": round(cost, 6),
+                }
+            finally:
+                if self._mem_conn is None:
+                    c.close()
+
     def _summary_sync(self) -> Dict[str, Any]:
         with self._lock:
             c = self._conn()
@@ -247,6 +316,16 @@ class MetricsStore:
 
 
 # ---------------------------------------------------------------------------
+
+
+def _percentile(values: List[float], q: float) -> float:
+    """算单个分位数（最近秩法）。空列表返回 0.0。"""
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+    idx = min(len(values) - 1, int(round(q * (len(values) - 1))))
+    return float(values[idx])
 
 
 def _percentiles(values: List[float]) -> Dict[str, float]:

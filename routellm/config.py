@@ -81,6 +81,24 @@ class Settings:
     # 单次调用的总尝试次数（含首次）
     resilience_max_attempts: int = 3
 
+    # ---- 级联前置过滤（方案文档 2）----
+    # L1 快速通道：简单 Query 绕过 BERT RPC。默认开启；置 false 即回到改造前行为。
+    fast_path_enabled: bool = True
+    # 极短文本阈值（字符数 ≤ 此值 → 直通弱模型）
+    fast_path_short_text_threshold: int = 15
+
+    # ---- 自适应阈值闭环（方案文档 3）----
+    # 默认开启（交付即生效）。置 false 时 Controller 退回静态阈值判决。
+    adaptive_threshold_enabled: bool = True
+    adaptive_tau_base: float = 0.5
+    adaptive_tau_min: float = 0.35
+    adaptive_tau_max: float = 0.75
+    adaptive_k_p: float = 1.0
+    adaptive_budget_tokens_per_min: float = 0.0
+    adaptive_latency_sla_ms: float = 0.0
+    adaptive_sample_interval_sec: float = 5.0
+    adaptive_window_sec: float = 60.0
+
     # ------------------------------------------------------------------
     @classmethod
     def from_env(cls, env: Optional[dict] = None) -> "Settings":
@@ -154,6 +172,25 @@ class Settings:
                 "RESILIENCE_RECOVERY_TIMEOUT", 60.0
             ),
             resilience_max_attempts=get_int("RESILIENCE_MAX_ATTEMPTS", 3),
+            # ---- 级联前置过滤 + 自适应阈值闭环（方案文档 2/3）----
+            # 默认开启：改造交付即生效。需回退改造前行为时显式置 false。
+            fast_path_enabled=get_bool("FAST_PATH_ENABLED", True),
+            fast_path_short_text_threshold=get_int(
+                "FAST_PATH_SHORT_TEXT_THRESHOLD", 15
+            ),
+            adaptive_threshold_enabled=get_bool("ADAPTIVE_THRESHOLD_ENABLED", True),
+            adaptive_tau_base=get_float("ADAPTIVE_TAU_BASE", 0.5),
+            adaptive_tau_min=get_float("ADAPTIVE_TAU_MIN", 0.35),
+            adaptive_tau_max=get_float("ADAPTIVE_TAU_MAX", 0.75),
+            adaptive_k_p=get_float("ADAPTIVE_K_P", 1.0),
+            adaptive_budget_tokens_per_min=get_float(
+                "ADAPTIVE_BUDGET_TOKENS_PER_MIN", 0.0
+            ),
+            adaptive_latency_sla_ms=get_float("ADAPTIVE_LATENCY_SLA_MS", 0.0),
+            adaptive_sample_interval_sec=get_float(
+                "ADAPTIVE_SAMPLE_INTERVAL_SEC", 5.0
+            ),
+            adaptive_window_sec=get_float("ADAPTIVE_WINDOW_SEC", 60.0),
         )
 
     # ------------------------------------------------------------------
@@ -209,6 +246,39 @@ class Settings:
                     f"当前: {self.resilience_max_attempts}"
                 )
 
+        # 自适应阈值（方案文档 3）：τ 区间必须自洽 —— 否则钳制逻辑会静默
+        # 吃掉 τ_base，运行时表现为「阈值不按预期浮动」，排查成本很高。
+        if self.adaptive_threshold_enabled:
+            if not 0.0 <= self.adaptive_tau_min <= self.adaptive_tau_max <= 1.0:
+                raise ConfigError(
+                    f"自适应阈值区间非法: 需 0 <= TAU_MIN({self.adaptive_tau_min}) "
+                    f"<= TAU_MAX({self.adaptive_tau_max}) <= 1"
+                )
+            if not self.adaptive_tau_min <= self.adaptive_tau_base <= self.adaptive_tau_max:
+                raise ConfigError(
+                    f"自适应阈值 TAU_BASE({self.adaptive_tau_base}) 必须落在 "
+                    f"[TAU_MIN({self.adaptive_tau_min}), TAU_MAX({self.adaptive_tau_max})] 内"
+                )
+            if self.adaptive_k_p < 0:
+                raise ConfigError(
+                    f"{ENV_PREFIX}ADAPTIVE_K_P 必须 >= 0，当前: {self.adaptive_k_p}"
+                )
+            if self.adaptive_sample_interval_sec <= 0:
+                raise ConfigError(
+                    f"{ENV_PREFIX}ADAPTIVE_SAMPLE_INTERVAL_SEC 必须 > 0，"
+                    f"当前: {self.adaptive_sample_interval_sec}"
+                )
+            if self.adaptive_window_sec <= 0:
+                raise ConfigError(
+                    f"{ENV_PREFIX}ADAPTIVE_WINDOW_SEC 必须 > 0，"
+                    f"当前: {self.adaptive_window_sec}"
+                )
+        if self.fast_path_short_text_threshold < 0:
+            raise ConfigError(
+                f"{ENV_PREFIX}FAST_PATH_SHORT_TEXT_THRESHOLD 必须 >= 0，"
+                f"当前: {self.fast_path_short_text_threshold}"
+            )
+
     @staticmethod
     def _check_provider_prefix(label: str, model: Optional[str]) -> None:
         if not model:
@@ -244,6 +314,14 @@ class Settings:
             "port": self.port,
             # 容错状态（方案文档 4.3）——便于运维从启动日志确认是否生效
             "resilience_enabled": self.resilience_enabled,
+            # 级联前置过滤 + 自适应阈值状态（方案文档 2/3）
+            "fast_path_enabled": self.fast_path_enabled,
+            "adaptive_threshold_enabled": self.adaptive_threshold_enabled,
+            "adaptive_tau": [
+                self.adaptive_tau_min, self.adaptive_tau_base, self.adaptive_tau_max
+            ],
+            "adaptive_budget_tokens_per_min": self.adaptive_budget_tokens_per_min,
+            "adaptive_latency_sla_ms": self.adaptive_latency_sla_ms,
             "inference_url": self.inference_url,
             "sw_ranking_inference_url": self.sw_ranking_inference_url,
             "config_path": self.config_path,

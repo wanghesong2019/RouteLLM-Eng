@@ -44,6 +44,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
+import httpx
 
 from routellm.monitoring.store import MetricsStore
 
@@ -168,6 +169,44 @@ async def api_timeseries(bucket_seconds: float = 60.0) -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning("读取时序失败: %s", e)
         return {"bucket_seconds": bucket_seconds, "series": [], "error": f"{type(e).__name__}: {e}"}
+
+
+@router.get("/api/adaptive-threshold")
+async def api_adaptive_threshold() -> Dict[str, Any]:
+    """自适应阈值控制器的当前状态（方案文档 3.7）。
+
+    注意：本面板可能是**独立容器**（8092）而非网关进程内，此时拿不到
+    网关的控制器实例 —— 故通过 ROUTELLM_GATEWAY_URL 转发到网关的
+    /api/adaptive-threshold（网关进程挂载了同一套 panel 路由）。
+    """
+    # 1) 同进程（网关端口上的 /dashboard 便利路由）：直接读全局控制器
+    try:
+        from routellm.openai_server import _ADAPTIVE_THRESHOLD
+
+        if _ADAPTIVE_THRESHOLD is not None:
+            st = dict(_ADAPTIVE_THRESHOLD.get_status())
+            st["source"] = "in-process"
+            return st
+        return {"enabled": False, "source": "in-process"}
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2) 独立容器：转发到网关
+    gw = os.environ.get("ROUTELLM_GATEWAY_URL", "").rstrip("/")
+    if not gw:
+        return {"enabled": False, "source": "unavailable",
+                "reason": "无法读取网关控制器，且未配置 ROUTELLM_GATEWAY_URL"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{gw}/api/adaptive-threshold")
+            data = r.json()
+            if isinstance(data, dict):
+                data["source"] = "gateway"
+            return data
+    except Exception as e:  # noqa: BLE001
+        logger.warning("转发自适应阈值状态查询失败: %s", e)
+        return {"enabled": False, "source": "error",
+                "error": f"{type(e).__name__}: {e}"}
 
 
 @router.get("/health")

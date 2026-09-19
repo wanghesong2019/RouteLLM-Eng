@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict
 from contextvars import ContextVar
 from dataclasses import dataclass, replace as dataclass_replace
@@ -9,6 +10,8 @@ from litellm import acompletion, completion
 from tqdm import tqdm
 
 from routellm.routers.routers import ROUTER_CLS
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +37,9 @@ class RoutingInfo:
 
 
 _ROUTING_INFO: ContextVar = ContextVar("routellm_routing_info", default=None)
+# 本上下文是否发生过「路由器故障 → 被迫走弱」。用于区分
+# 「阈值判定走弱」（正常，不算降级）与「路由器挂了走弱」（降级）。
+_ROUTER_FALLBACK: ContextVar = ContextVar("routellm_router_fallback", default=False)
 
 # 本次路由是否因**路由器故障**而被迫走弱（区别于正常的阈值判定走弱）。
 # 路由决策发生在 _get_routed_model_for_completion，而降级标记在下游调用后
@@ -58,6 +64,16 @@ def _set_routing_info(info: RoutingInfo) -> None:
 def get_routing_info() -> Optional[RoutingInfo]:
     """读取本上下文最近一次路由元信息；无则 None。"""
     return _ROUTING_INFO.get()
+
+
+def _set_router_fallback(flag: bool) -> None:
+    """设置「路由器故障被迫走弱」标记（逐请求重置）。"""
+    _ROUTER_FALLBACK.set(bool(flag))
+
+
+def is_router_fallback() -> bool:
+    """本上下文是否发生过「路由器故障 → 被迫走弱」。"""
+    return bool(_ROUTER_FALLBACK.get())
 
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -209,6 +225,11 @@ class Controller:
         resilience_max_attempts: int = 3,
         resilience_failure_threshold: int = 5,
         resilience_recovery_timeout: float = 60.0,
+        # ---- 新增：级联前置过滤（方案文档 2.4）----
+        # None 时行为与改造前完全一致（向后兼容）
+        fast_path: Optional[Any] = None,
+        # ---- 新增：自适应阈值闭环（方案文档 2.4）----
+        adaptive_threshold: Optional[Any] = None,
     ):
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
@@ -235,6 +256,12 @@ class Controller:
         # 最近一次调用是否降级（供 server 层写 X-RouteLLM-Downgraded 头）。
         # 用 ContextVar 语义由 server 层保证隔离；此处存实例属性 + 逐请求重置。
         self.last_downgraded = False
+
+        # ---- 级联前置过滤 + 自适应阈值闭环（方案文档 2/3）----
+        # 两者都可为 None：此时行为与改造前完全一致（向后兼容）。
+        self.fast_path = fast_path
+        self.adaptive_threshold = adaptive_threshold
+
 
         if config is None:
             config = GPT_4_AUGMENTED_CONFIG
@@ -425,6 +452,67 @@ class Controller:
         )
         return routed_model
 
+    def _fast_path_probe(self, prompt: str):
+        """L1 快速通道探测。命中返回 (routed_model, win_rate, router_name)，否则 None。
+
+        无 fast_path 注入时恒为 None（行为与改造前一致）。
+        """
+        if self.fast_path is None:
+            return None
+        try:
+            hit = self.fast_path.evaluate(prompt)
+        except Exception as e:  # noqa: BLE001
+            # 规则匹配本身出错绝不能影响业务：放行给 BERT
+            logging.getLogger(__name__).warning("快速通道评估失败，放行 BERT: %s", e)
+            return None
+        if hit is None:
+            return None
+
+        tier, win_rate, router_name = hit
+        live_pair = self.live_model_pair()
+        routed_model = live_pair.strong if tier == "strong" else live_pair.weak
+        return routed_model, float(win_rate), router_name
+
+    def _decide_with_threshold(self, win_rate: float, threshold: float,
+                               live_pair) -> str:
+        """判决档位：自适应阈值（含硬质防线）优先，无注入时用静态阈值。"""
+        if self.adaptive_threshold is not None:
+            return (
+                live_pair.strong
+                if self.adaptive_threshold.decide(win_rate) == "strong"
+                else live_pair.weak
+            )
+        return live_pair.strong if win_rate >= threshold else live_pair.weak
+
+    def _effective_threshold(self, threshold: float) -> float:
+        """当前生效阈值（监控上报用）：自适应 τ(t) 优先，否则静态阈值。"""
+        if self.adaptive_threshold is not None:
+            try:
+                return float(self.adaptive_threshold.get_effective_threshold())
+            except Exception:  # noqa: BLE001
+                return float(threshold)
+        return float(threshold)
+
+    def _check_backpressure(self, win_rate: float) -> None:
+        """硬质防线的背压出口（方案文档 3.4）。
+
+        预算耗尽 + 高难请求（s ≥ τ_max）时**不以次充好** —— 抛 429 让客户端
+        稍后重试，而不是静默降级给弱模型。未注入自适应控制器时是 no-op。
+        """
+        if self.adaptive_threshold is None:
+            return
+        try:
+            if self.adaptive_threshold.should_backpressure(win_rate):
+                raise RoutingError(
+                    "Token budget exhausted for high-difficulty request "
+                    "(backpressure guardrail). Retry later."
+                )
+        except RoutingError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # 背压判定自身异常不应阻断请求
+            logger.warning("背压判定失败，放行: %s", e)
+
     def _get_routed_model_for_completion(
         self, messages: list, router: str, threshold: float
     ):
@@ -438,14 +526,26 @@ class Controller:
 
         t0 = _time.perf_counter()
         _set_router_fallback(False)  # 逐请求重置
+
+        # ---- Stage 1: L1 快速通道（级联前置过滤，方案文档 2.3）----
+        # 命中则完全跳过 BERT RPC（省 10-30ms）
+        fp = self._fast_path_probe(prompt)
+        if fp is not None:
+            routed_model, win_rate, router_name = fp
+            latency_ms = (_time.perf_counter() - t0) * 1000
+            return self._finalize_routing(
+                router=router_name, win_rate=win_rate, routed_model=routed_model,
+                live_pair=live_pair, latency_ms=latency_ms,
+                threshold=self._effective_threshold(threshold),
+            )
+
+        # ---- Stage 2: 路由器精准打分 + Stage 3: 自适应阈值判决 ----
         router_instance = self.routers[router]
         # 显式算 win_rate 而非直接调 route() —— 后者只返回模型名，
         # 会把置信度丢掉（监控需要它）
         try:
             win_rate = float(router_instance.calculate_strong_win_rate(prompt))
-            routed_model = (
-                live_pair.strong if win_rate >= threshold else live_pair.weak
-            )
+            routed_model = self._decide_with_threshold(win_rate, threshold, live_pair)
         except Exception:  # noqa: BLE001
             # 路由失败时回落到原接口（保持既有容错行为）。
             # 注意：若路由器服务**整体不可达**（如 BERT 6070 挂掉），
@@ -459,9 +559,13 @@ class Controller:
             win_rate = 0.0
         latency_ms = (_time.perf_counter() - t0) * 1000
 
+        # 记录元信息供监控体系读取（见 RoutingInfo 的说明）
+        # threshold 记「实际生效阈值」：自适应模式下静态阈值已不参与判决，
+        # 若仍记静态值会让 Dashboard 与真实判决依据不符。
         return self._finalize_routing(
             router=router, win_rate=win_rate, routed_model=routed_model,
-            live_pair=live_pair, latency_ms=latency_ms, threshold=threshold,
+            live_pair=live_pair, latency_ms=latency_ms,
+            threshold=self._effective_threshold(threshold),
         )
 
     async def _get_routed_model_for_completion_async(
@@ -484,6 +588,20 @@ class Controller:
 
         t0 = _time.perf_counter()
         _set_router_fallback(False)
+
+        # ---- Stage 1: L1 快速通道（级联前置过滤，方案文档 2.3）----
+        # 命中则完全跳过 BERT RPC（省 10-30ms）；纯规则匹配，无 IO
+        fp = self._fast_path_probe(prompt)
+        if fp is not None:
+            routed_model, win_rate, router_name = fp
+            latency_ms = (_time.perf_counter() - t0) * 1000
+            return self._finalize_routing(
+                router=router_name, win_rate=win_rate, routed_model=routed_model,
+                live_pair=live_pair, latency_ms=latency_ms,
+                threshold=self._effective_threshold(threshold),
+            )
+
+        # ---- Stage 2: BERT 精准打分 + Stage 3: 自适应阈值判决 ----
         router_instance = self.routers[router]
         try:
             async_fn = getattr(
@@ -499,9 +617,7 @@ class Controller:
                         router_instance.calculate_strong_win_rate, prompt
                     )
                 )
-            routed_model = (
-                live_pair.strong if win_rate >= threshold else live_pair.weak
-            )
+            routed_model = self._decide_with_threshold(win_rate, threshold, live_pair)
         except Exception:  # noqa: BLE001
             # 回落同样不能阻塞事件循环，故用线程池执行同步 route()
             #
@@ -520,7 +636,8 @@ class Controller:
 
         return self._finalize_routing(
             router=router, win_rate=win_rate, routed_model=routed_model,
-            live_pair=live_pair, latency_ms=latency_ms, threshold=threshold,
+            live_pair=live_pair, latency_ms=latency_ms,
+            threshold=self._effective_threshold(threshold),
         )
 
     # Mainly used for evaluations
@@ -567,6 +684,12 @@ class Controller:
         # 判定路由落在哪一侧 —— 决定降级链的首选项与凭据档位
         tier = "strong" if routed_model == live_pair.strong else "weak"
 
+        # ---- 背压出口（方案文档 3.4）----
+        # 路由决策后、下游调用前：预算耗尽 + 高难请求 → 不以次充好，直接 429。
+        # 必须放在这里而不是更早 —— win_rate 是路由决策的产物。
+        ri = get_routing_info()
+        self._check_backpressure(ri.win_rate if ri is not None else 0.0)
+
         # 构造下游参数时不把 model 传给 litellm（由 _call_downstream 决定）
         call_kwargs = {k: v for k, v in kwargs.items() if k != "model"}
         return await self._call_downstream(
@@ -593,6 +716,9 @@ class Controller:
             routed_model = self._get_routed_model_for_completion(
                 kwargs["messages"], router, threshold
             )
+            # ---- 背压出口（方案文档 3.4），与异步版语义一致 ----
+            ri = get_routing_info()
+            self._check_backpressure(ri.win_rate if ri is not None else 0.0)
             kw = self.downstream_kwargs(routed_model)
             kwargs.pop("model", None)
             return completion(**kw, **kwargs)

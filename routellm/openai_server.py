@@ -29,12 +29,23 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 CONTROLLER = None
 SETTINGS: Optional[Settings] = None
 
+# ---- 级联前置过滤 / L0 缓存 / 自适应阈值（方案文档 1/2/3）----
+# _CACHE: L0 前置命中用的多级缓存（None 表示未启用，跳过前置检查）
+# _ADAPTIVE_THRESHOLD: 自适应阈值控制器（None 表示退回静态阈值判决）
+# _WINDOW_COUNTER: 自适应阈值的指标来源（进程内滑动窗口）
+_CACHE = None
+_ADAPTIVE_THRESHOLD = None
+_WINDOW_COUNTER = None
+# L0 进程内 LRU 容量。1000 条 ≈ 数十 KB，够覆盖短期重复请求；
+# 前置命中的价值在「省一次完整链路」，命中率比容量重要，不必贪大。
+_L0_CACHE_MAXSIZE = 1000
+
 count = defaultdict(lambda: defaultdict(int))
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global CONTROLLER, SETTINGS
+    global CONTROLLER, SETTINGS, _CACHE, _ADAPTIVE_THRESHOLD, _WINDOW_COUNTER
 
     SETTINGS = Settings.from_env()
     # 启动时校验，fail fast —— 避免配置错误拖到运行时变成 500
@@ -56,6 +67,65 @@ async def lifespan(app):
     # 若配置了远程推理服务，为 remote_* 路由器注入 base_url
     router_config = _inject_inference_url(router_config, SETTINGS)
 
+    # ---- 级联前置过滤 + L0 缓存 + 自适应阈值（方案文档 2/3）----
+    fast_path = None
+    if SETTINGS.fast_path_enabled:
+        from routellm.routers.fast_path import FastPathConfig, FastPathRouter
+
+        fast_path = FastPathRouter(
+            FastPathConfig(
+                enabled=True,
+                short_text_threshold=SETTINGS.fast_path_short_text_threshold,
+            )
+        )
+        logging.info(
+            "级联前置过滤已启用（L1 快速通道）: short_text_threshold=%s",
+            SETTINGS.fast_path_short_text_threshold,
+        )
+
+    # L0 缓存：正常请求路径上的前置命中检查（不再只在降级链里兜底）。
+    # 用 MultiTierCache（L1 LRU）+ result_key 语义，与降级链共用同一份缓存。
+    _CACHE = None
+    try:
+        from routellm.cache.lru_cache import LRUCache
+        from routellm.cache.multi_tier import MultiTierCache
+
+        _CACHE = MultiTierCache([LRUCache(maxsize=_L0_CACHE_MAXSIZE)])
+        logging.info(
+            "L0 缓存前置命中已启用: MultiTierCache([LRU(maxsize=%s)])",
+            _L0_CACHE_MAXSIZE,
+        )
+    except Exception as e:  # noqa: BLE001
+        logging.warning("L0 缓存初始化失败（跳过前置命中检查）: %s", e)
+
+    # 自适应阈值闭环：指标来源为进程内窗口计数器（零 SQL、零锁竞争）
+    if SETTINGS.adaptive_threshold_enabled:
+        from routellm.routers.adaptive_threshold import (
+            AdaptiveThresholdConfig,
+            AdaptiveThresholdController,
+            WindowMetricsCounter,
+        )
+
+        _WINDOW_COUNTER = WindowMetricsCounter(
+            window_sec=SETTINGS.adaptive_window_sec
+        )
+        _ADAPTIVE_THRESHOLD = AdaptiveThresholdController(
+            AdaptiveThresholdConfig(
+                enabled=True,
+                tau_base=SETTINGS.adaptive_tau_base,
+                tau_min=SETTINGS.adaptive_tau_min,
+                tau_max=SETTINGS.adaptive_tau_max,
+                k_p=SETTINGS.adaptive_k_p,
+                budget_tokens_per_min=SETTINGS.adaptive_budget_tokens_per_min,
+                latency_sla_ms=SETTINGS.adaptive_latency_sla_ms,
+                sample_interval_sec=SETTINGS.adaptive_sample_interval_sec,
+                window_sec=SETTINGS.adaptive_window_sec,
+            ),
+            metrics_store=_METRICS_STORE,
+            metrics_provider=_WINDOW_COUNTER.snapshot,
+        )
+        await _ADAPTIVE_THRESHOLD.start()
+
     CONTROLLER = Controller(
         routers=SETTINGS.routers,
         config=router_config,
@@ -65,11 +135,15 @@ async def lifespan(app):
         api_key=SETTINGS.api_key,
         progress_bar=True,
         config_store=_CONFIG_STORE,  # 注入后支持运行时热更新（方案文档 4.8）
-        # 容错与 Resilience（方案文档 4.3）—— 由环境变量控制，默认关闭
+        # 容错与 Resilience（方案文档 4.3）—— 由环境变量控制
         resilience_enabled=SETTINGS.resilience_enabled,
         resilience_max_attempts=SETTINGS.resilience_max_attempts,
         resilience_failure_threshold=SETTINGS.resilience_failure_threshold,
         resilience_recovery_timeout=SETTINGS.resilience_recovery_timeout,
+        resilience_cache=_CACHE,
+        # 级联前置过滤 + 自适应阈值闭环（方案文档 2/3）
+        fast_path=fast_path,
+        adaptive_threshold=_ADAPTIVE_THRESHOLD,
     )
     if SETTINGS.resilience_enabled:
         logging.info(
@@ -79,6 +153,11 @@ async def lifespan(app):
             SETTINGS.resilience_max_attempts,
         )
     yield
+
+    # ---- 清理 ----
+    if _ADAPTIVE_THRESHOLD is not None:
+        await _ADAPTIVE_THRESHOLD.stop()
+    _ADAPTIVE_THRESHOLD = None
     CONTROLLER = None
 
 
@@ -265,6 +344,108 @@ async def stream_response(response) -> AsyncGenerator:
     yield "data: [DONE]\n\n"
 
 
+def _l0_cache_key(request: ChatCompletionRequest) -> Optional[str]:
+    """L0 前置命中用的缓存 key（复用 cache/keys 的 result_key 语义）。
+
+    key 覆盖「消息 + 影响生成结果的采样参数」—— 只按消息做 key 会把
+    temperature/max_tokens 不同的请求误判为同一份缓存。
+    """
+    import json as _json
+
+    from routellm.cache.keys import result_key
+
+    try:
+        payload = _json.dumps(
+            {
+                "messages": request.model_dump(exclude_none=True).get("messages"),
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "max_tokens": request.max_tokens,
+                "stop": request.stop,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+    except (TypeError, ValueError):
+        return None
+    return result_key(payload)
+
+
+async def _l0_cache_lookup(request: ChatCompletionRequest):
+    """L0 缓存前置命中检查。命中返回响应对象，未命中返回 None。
+
+    刻意跳过 stream=True：流式响应不能从一个已固化的 JSON 里还原成 SSE 分片。
+    """
+    if _CACHE is None or request.stream:
+        return None
+    key = _l0_cache_key(request)
+    if key is None:
+        return None
+    try:
+        cached = await _CACHE.get(key)
+    except Exception as e:  # noqa: BLE001
+        logging.warning("L0 缓存读取失败（继续正常路由）: %s", e)
+        return None
+    if cached is None:
+        return None
+
+    import json as _json
+
+    try:
+        data = _json.loads(cached)
+    except (TypeError, ValueError):
+        return None
+
+    # 标记命中：客户端与监控都要能分辨「缓存结果」与「新生成结果」
+    data["cached"] = True
+    ctx = dict(_METRICS_CTX.get() or {})
+    ctx["cache_hit"] = True
+    # 缓存命中的语义是「这条请求没有产生下游调用」：
+    # 记 weak 档，成本按 0 计（estimate_cost 会按 token 数算钱，故显式置 0）。
+    ctx.setdefault("routed_model", "weak")
+    ctx["estimated_cost"] = 0.0
+    _METRICS_CTX.set(ctx)
+    return data
+
+
+async def _l0_cache_store(request: ChatCompletionRequest, res) -> None:
+    """把成功生成的响应写入 L0 缓存（供下次相同请求前置命中）。
+
+    只在非流式路径调用：流式响应是 SSE 分片，无法在这里固化成可回放的 JSON。
+    写失败不影响请求（缓存是纯增益，不是正确性依赖）。
+    """
+    if _CACHE is None or request.stream:
+        return
+    key = _l0_cache_key(request)
+    if key is None:
+        return
+    try:
+        import json as _json
+
+        payload = _json.dumps(res.model_dump(), ensure_ascii=False)
+        await _CACHE.set(key, payload.encode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        logging.warning("L0 缓存写入失败（不影响请求）: %s", e)
+
+
+async def _record_window_metrics(res) -> None:
+    """把本次请求的 token 数 / 延迟喂给自适应阈值的窗口计数器。
+
+    指标来源必须是**请求路径自身的产物**，而不是异步落库的 SQLite：
+    MetricsMiddleware 是用 asyncio.create_task 异步写库的，采样协程去查库
+    可能读到滞后（甚至空）的窗口，闭环会失去反馈。
+    """
+    if _WINDOW_COUNTER is None:
+        return
+    try:
+        usage = getattr(res, "usage", None)
+        pt = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        ct = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        _WINDOW_COUNTER.record(pt + ct)
+    except Exception as e:  # noqa: BLE001
+        logging.debug("窗口指标记录失败（不影响请求）: %s", e)
+
+
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
     # The model name field contains the parameters for routing.
@@ -275,14 +456,29 @@ async def create_chat_completion(request: ChatCompletionRequest):
     # 采集指标所需的信息写入 request.state（由 MetricsMiddleware 读取）
     _capture_request_meta(request)
 
+    # ---- Stage 0: L0 缓存前置命中（方案文档 2.5）----
+    # 命中直接返回，0 次模型调用、0 次 BERT：省掉整条路由链路
+    hit = await _l0_cache_lookup(request)
+    if hit is not None:
+        resp = JSONResponse(content=hit)
+        resp.headers["X-RouteLLM-Cache"] = "hit"
+        return resp
+
     try:
         res = await CONTROLLER.acompletion(
             **request.model_dump(exclude_none=True),
         )
     except RoutingError as e:
+        # 背压（方案文档 3.4）需映射为 429 + Retry-After，而非 400：
+        # 参数错误与「暂时性过载」对客户端是两种完全不同的处置方式。
+        status = 429 if "backpressure" in str(e).lower() else 400
+        headers = {"Retry-After": "30"} if status == 429 else None
+        if status == 429:
+            logging.warning("背压触发，拒绝高难请求: %s", e)
         return JSONResponse(
             ErrorResponse(message=str(e)).model_dump(),
-            status_code=400,
+            status_code=status,
+            headers=headers,
         )
     except FallbackExhaustedError as e:
         # 降级链全耗尽（方案文档 4.3 降级链④）：
@@ -296,6 +492,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
         )
 
     _capture_response_meta(request, res)
+    await _record_window_metrics(res)
     downgraded = bool(getattr(CONTROLLER, "last_downgraded", False))
 
     if request.stream:
@@ -304,6 +501,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
         )
     else:
         resp = JSONResponse(content=res.model_dump())
+        # 把本次结果写入 L0，供后续相同请求前置命中（方案文档 2.5）
+        await _l0_cache_store(request, res)
 
     # 降级可观测（方案文档 4.3 关键约束）：客户端必须能分辨
     # 「原始路由结果」与「降级兜底结果」，否则会把弱模型的回答
