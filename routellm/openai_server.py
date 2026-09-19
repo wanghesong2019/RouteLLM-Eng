@@ -126,6 +126,16 @@ async def lifespan(app):
         )
         await _ADAPTIVE_THRESHOLD.start()
 
+        # 把控制器注入面板路由 —— 面板端点不能反向 import 本模块：
+        # 以 `python -m routellm.openai_server` 启动时跑 lifespan 的是
+        # __main__ 那份，反向 import 会拿到另一份未初始化的副本（恒 None）。
+        try:
+            from routellm.monitoring.dashboard import set_adaptive_threshold
+
+            set_adaptive_threshold(_ADAPTIVE_THRESHOLD)
+        except Exception as _ae:  # noqa: BLE001
+            logging.warning("自适应阈值控制器注入面板失败: %s", _ae)
+
     CONTROLLER = Controller(
         routers=SETTINGS.routers,
         config=router_config,

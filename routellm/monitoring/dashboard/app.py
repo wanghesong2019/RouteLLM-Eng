@@ -59,8 +59,20 @@ DASHBOARD_PORT = 8080
 DASHBOARD_HOST = "0.0.0.0"
 
 _STORE: Optional[MetricsStore] = None
+# 自适应阈值控制器由网关**注入**（而不是本模块反向 import openai_server）。
+# 原因：以 `python -m routellm.openai_server` 启动时，跑 lifespan 的是
+# __main__ 那份模块，而 `from routellm.openai_server import _ADAPTIVE_THRESHOLD`
+# 会拿到**另一份**未跑 lifespan 的副本，那里恒为 None —— 端点永远报
+# enabled=false。注入彻底避开这个双实例陷阱。
+_ADAPTIVE: Optional[Any] = None
 
 router = APIRouter()
+
+
+def set_adaptive_threshold(ctrl: Optional[Any]) -> None:
+    """注入自适应阈值控制器（网关 lifespan 中调用）。"""
+    global _ADAPTIVE
+    _ADAPTIVE = ctrl
 
 
 # --------------------------------------------------------------------------- 配置
@@ -175,32 +187,25 @@ async def api_timeseries(bucket_seconds: float = 60.0) -> Dict[str, Any]:
 async def api_adaptive_threshold() -> Dict[str, Any]:
     """自适应阈值控制器的当前状态（方案文档 3.7）。
 
-    注意：本面板可能是**独立容器**（8092）而非网关进程内，此时拿不到
-    网关的控制器实例 —— 故通过 ROUTELLM_GATEWAY_URL 转发到网关的
-    /api/adaptive-threshold（网关进程挂载了同一套 panel 路由）。
+    控制器由网关注入（set_adaptive_threshold）。若本面板是**独立容器**
+    （8092）则没有注入值，此时转发到网关的同一端点。
     """
-    # 1) 同进程（网关端口上的 /dashboard 便利路由）：直接读全局控制器
-    try:
-        from routellm.openai_server import _ADAPTIVE_THRESHOLD
-
-        if _ADAPTIVE_THRESHOLD is not None:
-            st = dict(_ADAPTIVE_THRESHOLD.get_status())
-            st["source"] = "in-process"
-            return st
-        return {"enabled": False, "source": "in-process"}
-    except Exception:  # noqa: BLE001
-        pass
+    # 1) 同进程（网关端口上的 /dashboard 便利路由）：读注入的控制器
+    if _ADAPTIVE is not None:
+        st = dict(_ADAPTIVE.get_status())
+        st["source"] = "in-process"
+        return st
 
     # 2) 独立容器：转发到网关
     gw = os.environ.get("ROUTELLM_GATEWAY_URL", "").rstrip("/")
     if not gw:
         return {"enabled": False, "source": "unavailable",
-                "reason": "无法读取网关控制器，且未配置 ROUTELLM_GATEWAY_URL"}
+                "reason": "控制器未注入，且未配置 ROUTELLM_GATEWAY_URL"}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{gw}/api/adaptive-threshold")
             data = r.json()
-            if isinstance(data, dict):
+            if isinstance(data, dict) and data.get("source") == "in-process":
                 data["source"] = "gateway"
             return data
     except Exception as e:  # noqa: BLE001

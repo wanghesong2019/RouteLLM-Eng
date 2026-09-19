@@ -30,6 +30,7 @@ from routellm.monitoring.dashboard.app import (
     get_dashboard_port,
     get_store,
     router,
+    set_adaptive_threshold,
     set_store,
     start_dashboard_server_in_thread,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "router",
     "set_store",
     "get_store",
+    "set_adaptive_threshold",
     "create_dashboard_only_app",
     "start_dashboard_server_in_thread",
     "get_dashboard_host",
