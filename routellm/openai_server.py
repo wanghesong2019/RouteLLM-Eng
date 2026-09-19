@@ -152,6 +152,7 @@ async def lifespan(app):
         progress_bar=True,
         config_store=_CONFIG_STORE,  # 注入后支持运行时热更新（方案文档 4.8）
         # 容错与 Resilience（方案文档 4.3）—— 由环境变量控制
+        # 容错与 Resilience（方案文档 4.3）—— 由环境变量控制，默认关闭
         resilience_enabled=SETTINGS.resilience_enabled,
         resilience_max_attempts=SETTINGS.resilience_max_attempts,
         resilience_failure_threshold=SETTINGS.resilience_failure_threshold,
@@ -495,6 +496,16 @@ async def create_chat_completion(request: ChatCompletionRequest):
             ErrorResponse(message=str(e)).model_dump(),
             status_code=status,
             headers=headers,
+        )
+    except FallbackExhaustedError as e:
+        # 降级链全耗尽（方案文档 4.3 降级链④）：
+        # 503 而非 500 —— 这是**暂时性**上游不可用，客户端应稍后重试；
+        # Retry-After 给出建议间隔，避免客户端立刻重试形成风暴。
+        logging.warning("降级链耗尽，所有上游不可用: %s", e)
+        return JSONResponse(
+            ErrorResponse(message=str(e)).model_dump(),
+            status_code=503,
+            headers={"Retry-After": str(e.retry_after)},
         )
     except FallbackExhaustedError as e:
         # 降级链全耗尽（方案文档 4.3 降级链④）：

@@ -55,6 +55,20 @@ def is_router_fallback() -> bool:
     """本上下文是否发生过「路由器故障 → 被迫走弱」。"""
     return bool(_ROUTER_FALLBACK.get())
 
+# 本次路由是否因**路由器故障**而被迫走弱（区别于正常的阈值判定走弱）。
+# 路由决策发生在 _get_routed_model_for_completion，而降级标记在下游调用后
+# 才确定，两者隔了一层，故用 ContextVar 把该信号传出来。
+_ROUTER_FALLBACK: ContextVar = ContextVar("routellm_router_fallback", default=False)
+
+
+def _set_router_fallback(flag: bool) -> None:
+    _ROUTER_FALLBACK.set(bool(flag))
+
+
+def is_router_fallback() -> bool:
+    """本上下文是否发生过「路由器故障 → 被迫走弱」。"""
+    return bool(_ROUTER_FALLBACK.get())
+
 
 def _set_routing_info(info: RoutingInfo) -> None:
     """记录最近一次路由元信息（覆盖式）。"""
@@ -618,6 +632,9 @@ class Controller:
                     )
                 )
             routed_model = self._decide_with_threshold(win_rate, threshold, live_pair)
+            routed_model = (
+                live_pair.strong if win_rate >= threshold else live_pair.weak
+            )
         except Exception:  # noqa: BLE001
             # 回落同样不能阻塞事件循环，故用线程池执行同步 route()
             #
