@@ -51,6 +51,26 @@
   .tag.weak { background: rgba(77,212,160,.16); color: var(--weak); }
   .tag.hit { background: rgba(77,159,255,.16); color: var(--accent); }
   .empty { color: var(--dim); text-align: center; padding: 40px 0; }
+  /* 自适应阈值面板 */
+  .tau-wrap { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .tau-metric { display: flex; flex-direction: column; gap: 2px; min-width: 92px; }
+  .tau-metric .label { color: var(--dim); font-size: 11px; }
+  .tau-metric .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tau-bar {
+    position: relative; flex: 1 1 260px; height: 8px; border-radius: 4px;
+    background: linear-gradient(90deg, rgba(77,212,160,.35), rgba(255,122,89,.35));
+    min-width: 200px;
+  }
+  .tau-mark {
+    position: absolute; top: -5px; width: 3px; height: 18px; border-radius: 2px;
+    background: var(--fg); transform: translateX(-50%);
+  }
+  .tau-mark.base { background: var(--dim); }
+  .tau-scale { display: flex; justify-content: space-between; color: var(--dim);
+               font-size: 11px; margin-top: 4px; }
+  .tau-note { color: var(--dim); font-size: 11px; margin-top: 10px; }
+  .badge-off { padding: 1px 8px; border-radius: 4px; font-size: 11px;
+               background: rgba(139,147,167,.16); color: var(--dim); }
 </style>
 </head>
 <body>
@@ -82,6 +102,10 @@
     <div class="panel">
       <h2>成本累积（实际 vs 若全走强模型）</h2>
       <div class="chart" id="chart-cost"></div>
+    </div>
+    <div class="panel full">
+      <h2>自适应阈值闭环（τ 动态调节）</h2>
+      <div id="adaptive" class="tau-wrap"><span class="empty" style="padding:0">加载中…</span></div>
     </div>
     <div class="panel full">
       <h2>最近请求</h2>
@@ -217,18 +241,75 @@ function renderRecent(rows) {
     </tbody></table>`;
 }
 
+function renderAdaptive(a) {
+  const el = document.getElementById('adaptive');
+  if (!a || a.enabled !== true) {
+    const why = a && a.reason ? a.reason : (a && a.source === 'unavailable'
+      ? '未读取到网关控制器' : '未启用');
+    el.innerHTML = `<span class="badge-off">自适应阈值未启用</span>
+      <span class="tau-note" style="margin:0">${why}</span>`;
+    return;
+  }
+
+  const min = a.tau_min, max = a.tau_max, base = a.tau_base, cur = a.effective_tau;
+  const span = (max - min) || 1;
+  const pos = (v) => Math.min(100, Math.max(0, ((v - min) / span) * 100));
+  const active = Math.abs(cur - base) > 0.001;
+  // 方向语义：τ 上调 → 更多请求走弱模型（省钱/更快）；下调 → 更多走强（保质量）
+  const dir = cur > base ? '↑ 上调（趋省成本 / 降延迟）'
+            : cur < base ? '↓ 下调（趋保质量）' : '＝ 等于基准（无预算压力）';
+  const budget = a.budget_tokens_per_min > 0
+    ? a.budget_tokens_per_min.toLocaleString() + ' tok/min'
+    : '不限';
+  const sla = a.latency_sla_ms > 0 ? fmtMs(a.latency_sla_ms) : '不限';
+
+  el.innerHTML = `
+    <div class="tau-metric">
+      <span class="label">生效阈值 τ(t)</span>
+      <span class="value" ${active ? 'style="color:var(--accent)"' : ''}>${cur.toFixed(3)}</span>
+    </div>
+    <div class="tau-metric">
+      <span class="label">基准 τ_base</span>
+      <span class="value">${base.toFixed(2)}</span>
+    </div>
+    <div class="tau-bar">
+      <div class="tau-mark" style="left:${pos(cur)}%" title="当前 τ=${cur.toFixed(3)}"></div>
+      <div class="tau-mark base" style="left:${pos(base)}%" title="基准 τ_base=${base}"></div>
+    </div>
+    <div class="tau-metric">
+      <span class="label">区间 [τ_min, τ_max]</span>
+      <span class="value" style="font-size:14px">${min} ~ ${max}</span>
+    </div>
+    <div class="tau-metric">
+      <span class="label">窗口成本速率</span>
+      <span class="value" style="font-size:14px">${Math.round(a.cost_rate).toLocaleString()}</span>
+    </div>
+    <div class="tau-metric">
+      <span class="label">P90 延迟</span>
+      <span class="value" style="font-size:14px">${a.latency_p90 > 0 ? fmtMs(a.latency_p90) : '--'}</span>
+    </div>
+    <div class="tau-note" style="flex-basis:100%">
+      ${dir} ｜ 预算 ${budget} ｜ 延迟 SLA ${sla} ｜
+      采样 ${a.sample_interval_sec}s / 窗口 ${a.window_sec}s ｜
+      硬质防线：s ≥ ${max} 强制走强，s &lt; ${min} 稳定走弱
+    </div>`;
+}
+
 async function loadAll() {
   try {
-    const [sum, ts, rec] = await Promise.all([
+    const [sum, ts, rec, ada] = await Promise.all([
       fetch('/api/metrics/summary').then(r => r.json()),
       fetch('/api/metrics/timeseries?bucket_seconds=60').then(r => r.json()),
       fetch('/api/metrics/recent?limit=15').then(r => r.json()),
+      // 阈值端点单独容错：它不可用时不应拖垮整个面板
+      fetch('/api/adaptive-threshold').then(r => r.json()).catch(() => ({enabled: false})),
     ]);
     renderCards(sum);
     renderTimeSeries(ts.series);
     renderPie(sum);
     renderLatency(sum);
     renderCost(sum);
+    renderAdaptive(ada);
     renderRecent(rec.requests);
     document.getElementById('updated').textContent =
       '更新于 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
