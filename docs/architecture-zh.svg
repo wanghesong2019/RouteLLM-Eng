@@ -1,0 +1,246 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 850" width="100%" height="100%">
+  <defs>
+    <style>
+      .text-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif; font-size: 20px; font-weight: 700; fill: #ffffff; }
+      .text-subtitle { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; fill: #8b949e; }
+      .region-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; font-weight: 600; fill: #8b9bb4; letter-spacing: 0.5px; }
+      .card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 600; fill: #f0f3f8; }
+      .card-sub { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; fill: #8b949e; }
+      .metric-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; font-weight: 500; fill: #9aa0b4; }
+      .badge-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 11px; font-weight: 600; }
+    </style>
+
+    <!-- 箭头标记定义 -->
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#4d9fff" />
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ff7a59" />
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#4dd4a0" />
+    </marker>
+    <marker id="arrow-amber" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#ffc857" />
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#6e7681" />
+    </marker>
+  </defs>
+
+  <!-- 全局深色背景 -->
+  <rect width="1440" height="850" fill="#0f1117" />
+
+  <!-- 顶部导航与项目标头 -->
+  <text x="35" y="46" class="text-title">RouteLLM-Eng</text>
+  <text x="195" y="46" class="text-subtitle">生产级 LLM 智能路由网关系统架构</text>
+  <rect x="1225" y="26" width="180" height="28" rx="6" fill="#162035" stroke="#4d9fff" stroke-width="1.5" />
+  <text x="1315" y="45" class="badge-text" fill="#4d9fff" text-anchor="middle">Production Architecture</text>
+
+  <!-- ================= 区域一：客户端接入层 (左) ================= -->
+  <rect x="35" y="75" width="165" height="680" rx="8" fill="#12161f" stroke="#252d3d" stroke-width="2" stroke-dasharray="4 4" />
+  <rect x="45" y="85" width="145" height="26" rx="4" fill="#1b2230" />
+  <text x="117" y="102" class="region-title" text-anchor="middle">客户端接入层</text>
+
+  <!-- Client 1 -->
+  <rect x="50" y="150" width="135" height="60" rx="6" fill="#161b26" stroke="#4d9fff" stroke-width="1.5" />
+  <text x="117" y="177" class="card-title" text-anchor="middle">OpenAI SDK</text>
+  <text x="117" y="196" class="card-sub" text-anchor="middle">Python / Node.js</text>
+
+  <!-- Client 2 -->
+  <rect x="50" y="245" width="135" height="60" rx="6" fill="#161b26" stroke="#4d9fff" stroke-width="1.5" />
+  <text x="117" y="272" class="card-title" text-anchor="middle">curl / HTTP</text>
+  <text x="117" y="291" class="card-sub" text-anchor="middle">Raw JSON Request</text>
+
+  <!-- Client 3 -->
+  <rect x="50" y="340" width="135" height="60" rx="6" fill="#161b26" stroke="#4d9fff" stroke-width="1.5" />
+  <text x="117" y="367" class="card-title" text-anchor="middle">Agent 编排层</text>
+  <text x="117" y="386" class="card-sub" text-anchor="middle">LangChain / CrewAI</text>
+
+  <!-- 连线：客户端到网关 -->
+  <path d="M 185 275 L 240 275" stroke="#4d9fff" stroke-width="2" marker-end="url(#arrow-blue)" />
+  <rect x="180" y="222" width="60" height="22" rx="4" fill="#0f1117" stroke="#30363d" stroke-width="1" />
+  <text x="210" y="237" class="card-sub" fill="#4d9fff" font-weight="600" text-anchor="middle">🔒 Auth</text>
+  <text x="212" y="260" class="card-sub" text-anchor="middle">Bearer + HMAC</text>
+
+  <!-- ================= 区域二：网关容器 (中左) ================= -->
+  <rect x="240" y="75" width="500" height="680" rx="8" fill="#12161f" stroke="#4d9fff" stroke-width="2" />
+  <rect x="250" y="85" width="260" height="26" rx="4" fill="#162035" />
+  <text x="260" y="102" class="region-title" fill="#4d9fff">网关容器 · 675MB · 无 torch</text>
+
+  <!-- L1 快速通道 -->
+  <rect x="260" y="130" width="310" height="85" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <rect x="270" y="140" width="22" height="22" rx="4" fill="#1e293b" />
+  <text x="281" y="156" fill="#4d9fff" font-size="12" text-anchor="middle">▽</text>
+  <text x="302" y="156" class="card-title">L1 快速通道</text>
+  <text x="480" y="156" class="badge-text" fill="#4dd4a0">&lt;1ms · 纯规则</text>
+  <text x="270" y="185" class="card-sub">高频寒暄 / 格式确认 / 短指令 → 零推理直通弱模型</text>
+
+  <!-- 箭头 L1 -> L2 -->
+  <path d="M 415 215 L 415 245" stroke="#6e7681" stroke-width="2" marker-end="url(#arrow-gray)" />
+  <text x="430" y="235" class="card-sub" fill="#8b949e">miss →</text>
+
+  <!-- L2 BERT 路由器 -->
+  <rect x="260" y="250" width="190" height="90" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <rect x="270" y="260" width="22" height="22" rx="4" fill="#1e293b" />
+  <text x="281" y="276" fill="#4d9fff" font-size="12" text-anchor="middle">☊</text>
+  <text x="300" y="276" class="card-title">L2 BERT 路由器</text>
+  <text x="270" y="302" class="badge-text" fill="#4d9fff">~185ms · ML 分类器</text>
+  <text x="270" y="325" class="card-sub">预测相对胜率分: win_rate s</text>
+
+  <!-- L2 旁边：多级 LRU Cache -->
+  <rect x="465" y="250" width="105" height="90" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <text x="517" y="278" class="card-title" font-size="13" text-anchor="middle">多级 LRU</text>
+  <text x="517" y="298" class="badge-text" fill="#4dd4a0" text-anchor="middle">命中 0.02ms</text>
+  <text x="517" y="322" class="card-sub" text-anchor="middle">L1内存→L2外置</text>
+  <!-- L2 <-> Cache 双向箭头 -->
+  <path d="M 450 295 L 465 295" stroke="#4d9fff" stroke-width="2" />
+
+  <!-- 箭头 L2 -> L3 -->
+  <path d="M 355 340 L 355 375" stroke="#6e7681" stroke-width="2" marker-end="url(#arrow-gray)" />
+
+  <!-- L3 自适应阈值 -->
+  <rect x="260" y="380" width="310" height="200" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <rect x="270" y="390" width="22" height="22" rx="4" fill="#1e293b" />
+  <text x="281" y="406" fill="#4d9fff" font-size="12" text-anchor="middle">⚖</text>
+  <text x="300" y="406" class="card-title">L3 自适应阈值</text>
+  <text x="475" y="406" class="badge-text" fill="#4d9fff">τ(t) 动态切分</text>
+
+  <!-- 条件分支一 (强模型) -->
+  <rect x="272" y="425" width="286" height="34" rx="4" fill="#1f181c" stroke="#ff7a59" stroke-width="1" />
+  <circle cx="288" cy="442" r="4" fill="#ff7a59" />
+  <text x="300" y="446" class="card-sub" fill="#ff7a59" font-weight="600">s ≥ τ_max → 强制锁定强模型保证质量</text>
+
+  <!-- 条件分支二 (弱模型) -->
+  <rect x="272" y="468" width="286" height="34" rx="4" fill="#14211d" stroke="#4dd4a0" stroke-width="1" />
+  <circle cx="288" cy="485" r="4" fill="#4dd4a0" />
+  <text x="300" y="489" class="card-sub" fill="#4dd4a0" font-weight="600">s &lt; τ_min → 稳定走弱模型实现极速降本</text>
+
+  <!-- 条件分支三 (背压) -->
+  <rect x="272" y="511" width="286" height="42" rx="4" fill="#241d14" stroke="#ffc857" stroke-width="1" />
+  <circle cx="288" cy="532" r="4" fill="#ffc857" />
+  <text x="300" y="528" class="card-sub" fill="#ffc857" font-weight="600">实时预算耗尽 + s ≥ τ_max →</text>
+  <text x="300" y="544" class="card-sub" fill="#ffc857">触发 429 背压熔断（绝不降级给弱模型破坏质量）</text>
+
+  <!-- 网关右边缘：Resilience 容错模块 -->
+  <rect x="590" y="130" width="135" height="450" rx="6" fill="#141824" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="3 3" />
+  <text x="657" y="155" class="region-title" fill="#e6edf3" text-anchor="middle">Resilience 容错</text>
+
+  <rect x="600" y="180" width="115" height="90" rx="4" fill="#1b2030" stroke="#30363d" stroke-width="1" />
+  <text x="657" y="205" class="card-title" font-size="12" text-anchor="middle">熔断器</text>
+  <text x="657" y="228" class="card-sub" text-anchor="middle">三态自愈状态机</text>
+  <text x="657" y="248" class="badge-text" fill="#ffc857" font-size="9" text-anchor="middle">CLOSED→OPEN</text>
+
+  <rect x="600" y="290" width="115" height="90" rx="4" fill="#1b2030" stroke="#30363d" stroke-width="1" />
+  <text x="657" y="315" class="card-title" font-size="12" text-anchor="middle">重试引擎</text>
+  <text x="657" y="338" class="card-sub" text-anchor="middle">指数退避 + Jitter</text>
+  <text x="657" y="358" class="badge-text" fill="#4d9fff" font-size="9" text-anchor="middle">语义错误识别</text>
+
+  <rect x="600" y="400" width="115" height="100" rx="4" fill="#1b2030" stroke="#30363d" stroke-width="1" />
+  <text x="657" y="425" class="card-title" font-size="12" text-anchor="middle">多级降级链</text>
+  <text x="657" y="450" class="badge-text" fill="#4dd4a0" font-size="10" text-anchor="middle">强 → 弱</text>
+  <text x="657" y="470" class="badge-text" fill="#8b949e" font-size="10" text-anchor="middle">弱 → 缓存</text>
+  <text x="657" y="490" class="badge-text" fill="#ff7a59" font-size="10" text-anchor="middle">缓存 → 503</text>
+
+  <!-- ================= 区域三：模型推理层 (中右) ================= -->
+  <rect x="765" y="75" width="310" height="680" rx="8" fill="#12161f" stroke="#252d3d" stroke-width="2" stroke-dasharray="4 4" />
+  <rect x="775" y="85" width="130" height="26" rx="4" fill="#1b2230" />
+  <text x="840" y="102" class="region-title" text-anchor="middle">模型推理层</text>
+
+  <!-- 强模型卡片 -->
+  <rect x="785" y="140" width="270" height="85" rx="6" fill="#1a1417" stroke="#ff7a59" stroke-width="2" />
+  <text x="805" y="172" class="card-title" fill="#ff7a59">强模型 (Strong LLM)</text>
+  <text x="805" y="195" class="card-sub">如 DeepSeek-V4-Pro / GPT-4o</text>
+  <text x="1030" y="172" class="badge-text" fill="#ff7a59">保证质量</text>
+
+  <!-- 弱模型卡片 -->
+  <rect x="785" y="270" width="270" height="85" rx="6" fill="#121d19" stroke="#4dd4a0" stroke-width="2" />
+  <text x="805" y="302" class="card-title" fill="#4dd4a0">弱模型 (Weak LLM)</text>
+  <text x="805" y="325" class="card-sub">如 DeepSeek-V4-Flash / Qwen-2.5-7B</text>
+  <text x="1030" y="302" class="badge-text" fill="#4dd4a0">极低成本</text>
+
+  <!-- Host 推理服务 :6070 (右下方独立容器) -->
+  <rect x="785" y="420" width="270" height="110" rx="6" fill="#161b26" stroke="#4d9fff" stroke-width="1.5" stroke-dasharray="4 4" />
+  <text x="805" y="450" class="card-title">Host 推理服务 (:6070)</text>
+  <text x="805" y="475" class="badge-text" fill="#4d9fff">BERT 分类器独立实例</text>
+  <text x="805" y="500" class="card-sub">HTTP RPC 通信 · GPU 算力驻留宿主机侧</text>
+  <text x="805" y="518" class="card-sub">隔离网关容器环境（实现网关 0 torch 依赖）</text>
+
+  <!-- 调度连线 -->
+  <!-- L3 -> 强模型 -->
+  <path d="M 570 442 L 740 442 L 740 182 L 785 182" fill="none" stroke="#ff7a59" stroke-width="2" marker-end="url(#arrow-orange)" />
+  <text x="690" y="432" class="badge-text" fill="#ff7a59">Strong 路径</text>
+
+  <!-- L3 -> 弱模型 (包括 L1 直通分流) -->
+  <path d="M 570 485 L 755 485 L 755 312 L 785 312" fill="none" stroke="#4dd4a0" stroke-width="2" marker-end="url(#arrow-green)" />
+  <text x="690" y="475" class="badge-text" fill="#4dd4a0">Weak 路径</text>
+
+  <!-- 强弱模型响应回流网关 -->
+  <path d="M 785 200 L 740 200" fill="none" stroke="#6e7681" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow-gray)" />
+  <path d="M 785 330 L 740 330" fill="none" stroke="#6e7681" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow-gray)" />
+
+  <!-- L2 BERT 连接到 Host 推理服务 -->
+  <path d="M 450 310 L 460 310 L 460 365 L 775 365 L 775 460 L 785 460" fill="none" stroke="#4d9fff" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow-blue)" />
+
+  <!-- ================= 区域五：运行时配置 (右上) ================= -->
+  <rect x="1100" y="75" width="305" height="290" rx="8" fill="#12161f" stroke="#252d3d" stroke-width="2" stroke-dasharray="4 4" />
+  <rect x="1110" y="85" width="130" height="26" rx="4" fill="#1b2230" />
+  <text x="1175" y="102" class="region-title" text-anchor="middle">运行时配置中心</text>
+
+  <rect x="1115" y="130" width="275" height="100" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <rect x="1125" y="140" width="24" height="24" rx="4" fill="#1e293b" />
+  <text x="1137" y="157" fill="#4d9fff" font-size="14" text-anchor="middle">⚙</text>
+  <text x="1158" y="157" class="card-title">热更新 · 原子替换</text>
+  <text x="1125" y="185" class="badge-text" fill="#4d9fff">模型 / 密钥 / base_url 运行时修改</text>
+  <text x="1125" y="210" class="card-sub">ConfigStore RCU 机制 · 读操作无锁并发</text>
+
+  <rect x="1115" y="245" width="275" height="100" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="1.5" />
+  <text x="1130" y="272" class="card-title" font-size="13">配置 UI 面板</text>
+  <text x="1130" y="295" class="card-sub">• 敏感凭据掩码回显 (sk-****)</text>
+  <text x="1130" y="315" class="card-sub">• 连通性预检 (Dry-Run Ping)</text>
+  <text x="1130" y="335" class="card-sub">• 零重启热加载生效</text>
+
+  <!-- 网关与配置中心的双向虚线 -->
+  <path d="M 740 115 L 1100 115" fill="none" stroke="#4d9fff" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow-blue)" />
+
+  <!-- ================= 区域四：可观测性层 (右下) ================= -->
+  <rect x="1100" y="380" width="305" height="375" rx="8" fill="#12161f" stroke="#252d3d" stroke-width="2" stroke-dasharray="4 4" />
+  <rect x="1110" y="390" width="130" height="26" rx="4" fill="#1b2230" />
+  <text x="1175" y="407" class="region-title" text-anchor="middle">可观测性层</text>
+
+  <!-- SQLite -->
+  <rect x="1115" y="430" width="275" height="90" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <rect x="1125" y="440" width="24" height="24" rx="4" fill="#1e293b" />
+  <text x="1137" y="457" fill="#4d9fff" font-size="14" text-anchor="middle">⛁</text>
+  <text x="1158" y="457" class="card-title">SQLite · 重启不丢</text>
+  <text x="1125" y="485" class="badge-text" fill="#4dd4a0">非侵入式中间件异步刷盘</text>
+  <text x="1125" y="505" class="card-sub">WAL 模式持久化指标数据 · 零外部组件依赖</text>
+
+  <!-- Dashboard -->
+  <rect x="1115" y="535" width="275" height="95" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="2" />
+  <text x="1130" y="562" class="card-title">ECharts Dashboard (:8092)</text>
+  <text x="1130" y="587" class="card-sub">• 强弱模型路由分布饼图</text>
+  <text x="1130" y="607" class="card-sub">• P50 / P90 / P99 动态时延分析柱状图</text>
+  <text x="1130" y="622" class="card-sub">• Token 吞吐与成本节约实时看板</text>
+
+  <!-- Prometheus -->
+  <rect x="1115" y="645" width="275" height="90" rx="6" fill="#161b26" stroke="#2d3748" stroke-width="1.5" />
+  <text x="1130" y="672" class="card-title">Prometheus 采集端点</text>
+  <text x="1130" y="695" class="badge-text" fill="#ff7a59">/metrics · 零外部依赖</text>
+  <text x="1130" y="718" class="card-sub">标准化 Exporter · 开箱对接 Grafana</text>
+
+  <!-- 网关与 SQLite 连线 -->
+  <path d="M 740 600 L 1100 600" fill="none" stroke="#4dd4a0" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arrow-green)" />
+
+  <!-- ================= 底部标注栏：核心量化指标 ================= -->
+  <rect x="35" y="770" width="1370" height="50" rx="6" fill="#121620" stroke="#212838" stroke-width="1.5" />
+  <circle cx="55" cy="795" r="4" fill="#4dd4a0" />
+  <text x="70" y="799" class="metric-text">
+    <tspan fill="#ffffff" font-weight="600">生产基准测试：</tspan>
+    路由判定延迟 394ms → <tspan fill="#4dd4a0" font-weight="600">185ms</tspan> · 
+    多级缓存命中仅需 <tspan fill="#4dd4a0" font-weight="600">0.02ms</tspan> · 
+    网关容器镜像 <tspan fill="#4d9fff" font-weight="600">675MB</tspan>（彻底剥离 torch 依赖） · 
+    <tspan fill="#4d9fff" font-weight="600">405</tspan> 自动化单元测试全通过 · 
+    开源协议 <tspan fill="#ffffff">Apache 2.0</tspan>
+  </text>
+</svg>
