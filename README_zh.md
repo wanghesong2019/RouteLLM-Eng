@@ -155,6 +155,42 @@ python -m routellm.openai_server --routers random  # random 不需要 GPU
 
 > **无缝替换** — 只需改 `base_url`，零代码改动。
 
+### 🔌 10 秒接入主流生态
+
+现有应用无需修改一行核心代码，只需将 Base URL 指向 `:6060`：
+
+<details>
+<summary><strong>Python OpenAI SDK / LangChain / LlamaIndex</strong></summary>
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:6060/v1",  # 指向 RouteLLM-Eng 网关
+    api_key="YOUR_GATEWAY_KEY",
+)
+
+response = client.chat.completions.create(
+    model="router-bert-0.5",  # 路由规格：L1+L2+L3 级联智能调度
+    messages=[{"role": "user", "content": "帮我写一个快速排序"}],
+)
+```
+
+</details>
+
+<details>
+<summary><strong>NextChat / Open-WebUI / Dify 等可视化界面</strong></summary>
+
+在模型提供商设置中添加 OpenAI 兼容服务：
+
+- **API Base URL**: `http://<your-ip>:6060/v1`
+- **API Key**: `YOUR_GATEWAY_KEY`
+- **Model Name**: `router-bert-0.5`
+
+完成。网关透明处理路由、缓存、降级与可观测性。
+
+</details>
+
 ## 📊 评测
 
 复现论文指标（APGR / CPT 框架，RouteLLM, ICLR 2025）：

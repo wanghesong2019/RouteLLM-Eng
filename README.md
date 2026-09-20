@@ -155,6 +155,42 @@ python -m routellm.openai_server --routers random  # random needs no GPU
 
 > **Drop-in replacement** — only `base_url` needs to change. Zero code modifications required.
 
+### 🔌 Drop-in Integration with Popular Frameworks
+
+Your existing application needs zero code changes — just point `base_url` to `:6060`:
+
+<details>
+<summary><strong>Python OpenAI SDK / LangChain / LlamaIndex</strong></summary>
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:6060/v1",  # Point to RouteLLM-Eng gateway
+    api_key="YOUR_GATEWAY_KEY",
+)
+
+response = client.chat.completions.create(
+    model="router-bert-0.5",  # Routing spec: L1+L2+L3 cascade
+    messages=[{"role": "user", "content": "Write a quicksort"}],
+)
+```
+
+</details>
+
+<details>
+<summary><strong>NextChat / Open-WebUI / Dify / Any OpenAI-compatible UI</strong></summary>
+
+In your provider settings, add an OpenAI-compatible service:
+
+- **API Base URL**: `http://<your-ip>:6060/v1`
+- **API Key**: `YOUR_GATEWAY_KEY`
+- **Model Name**: `router-bert-0.5`
+
+That's it. The gateway handles routing, caching, fallback, and observability transparently.
+
+</details>
+
 ## 📊 Evaluation
 
 Reproduces paper metrics (APGR / CPT framework, RouteLLM, ICLR 2025):
