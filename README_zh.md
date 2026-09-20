@@ -138,7 +138,7 @@ docker compose up -d       # 网关 :6060 + 面板 :8092
 
 ```bash
 curl http://localhost:6060/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_G...EY" \
+  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"router-bert-0.5",
        "messages":[{"role":"user","content":"你好！"}]}'
