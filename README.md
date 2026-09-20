@@ -9,10 +9,12 @@
     Based on LMSYS <a href="https://github.com/lmsys/routellm">RouteLLM</a> (ICLR 2025)
   </p>
   <p align="center">
+    <a href="https://github.com/wanghesong2019/RouteLLM-Eng/actions"><img src="https://github.com/wanghesong2019/RouteLLM-Eng/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"/></a>
     <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"/></a>
     <a href="#tests"><img src="https://img.shields.io/badge/tests-405%20passed-brightgreen.svg" alt="Tests"/></a>
     <a href="#quick-start"><img src="https://img.shields.io/badge/docker-gateway%20675MB%20%2B%20dashboard%20174MB-blue.svg" alt="Docker"/></a>
+    <a href="https://github.com/wanghesong2019/RouteLLM-Eng"><img src="https://img.shields.io/github/stars/wanghesong2019/RouteLLM-Eng?style=social" alt="GitHub Stars"/></a>
   </p>
 </p>
 
@@ -102,6 +104,14 @@ Cache empty → HTTP 503 + Retry-After: 30
 </p>
 
 **Key design decision (ADR-001):** Model inference is decoupled from the gateway container. The BERT classifier runs on a host-side inference service (`services/inference_server.py`), called via HTTP. This keeps the gateway image at 675MB (no torch/transformers) and lets you scale inference independently.
+
+## 🖼️ Dashboard Preview
+
+<p align="center">
+  <img src="docs/dashboard-preview.png" alt="RouteLLM-Eng Dashboard" width="90%"/>
+</p>
+
+> Dark-themed ECharts dashboard with real-time routing distribution, latency percentiles, cache hit rate, and adaptive threshold state. Accessible at `:8092` — no auth required for internal deployment.
 
 ## ⚡ Quick Start
 

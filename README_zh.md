@@ -9,10 +9,12 @@
     基于 LMSYS <a href="https://github.com/lmsys/routellm">RouteLLM</a>（ICLR 2025）
   </p>
   <p align="center">
+    <a href="https://github.com/wanghesong2019/RouteLLM-Eng/actions"><img src="https://github.com/wanghesong2019/RouteLLM-Eng/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
     <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"/></a>
     <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"/></a>
     <a href="#测试"><img src="https://img.shields.io/badge/tests-405%20passed-brightgreen.svg" alt="Tests"/></a>
     <a href="#快速开始"><img src="https://img.shields.io/badge/docker-网关%20675MB%20%2B%20面板%20174MB-blue.svg" alt="Docker"/></a>
+    <a href="https://github.com/wanghesong2019/RouteLLM-Eng"><img src="https://img.shields.io/github/stars/wanghesong2019/RouteLLM-Eng?style=social" alt="GitHub Stars"/></a>
   </p>
 </p>
 
@@ -102,6 +104,14 @@ LMSYS RouteLLM 是一项开创性的学术贡献：把简单问题路由到弱�
 </p>
 
 **关键设计决策（ADR-001）：** 模型推理与网关容器解耦。BERT 分类器运行在宿主机侧推理服务（`services/inference_server.py`），通过 HTTP 调用。这使得网关镜像仅 675MB（不含 torch/transformers），且推理可独立扩缩容。
+
+## 🖼️ 面板预览
+
+<p align="center">
+  <img src="docs/dashboard-preview.png" alt="RouteLLM-Eng 面板" width="90%"/>
+</p>
+
+> 暗色主题 ECharts 面板，实时展示路由分布、延迟分位、缓存命中率与自适应阈值状态。访问 `:8092`——内网部署免鉴权。
 
 ## ⚡ 快速开始
 
