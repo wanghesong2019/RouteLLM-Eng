@@ -8,16 +8,12 @@
 
 ## Phase 0：前置准备
 
-### Task 0.1 `[用户]` 确认 GitHub 仓库地址
+### Task 0.1 `[已完成]` GitHub 仓库地址已确认
 
-用户需确认 RouteLLM-Eng 在 GitHub 上的实际仓库路径（owner/repo），用于：
-- Star History 链接
-- CI badge 链接
-- Docker Pulls badge 链接
+**仓库地址**：`https://github.com/wanghesong2019/RouteLLM-Eng`
+**owner/repo**：`wanghesong2019/RouteLLM-Eng`
 
-**用户操作**：在 GitHub 上创建公开仓库（如 `wanghesong2019/RouteLLM-Eng`），把 opensource 分支推上去。然后把仓库全路径告诉 AI。
-
-**如果用户尚未创建 GitHub 仓库**：AI 跳过 Phase 2 的 CI/Docker badge 和 Phase 5 的 Star History，用注释占位，等用户确认后补上。
+后续所有 Task 中的 GitHub 链接均使用此地址，无需条件判断。
 
 ### Task 0.2 `[用户]` 准备视觉素材
 
@@ -84,7 +80,7 @@ ls -la docs/dashboard-preview.png docs/demo-terminal.gif 2>/dev/null
   </p>
 ```
 
-替换为（假设 GitHub 仓库为 `wanghesong2019/RouteLLM-Eng`，如不同请替换）：
+替换为：
 ```html
   <p align="center">
     <a href="https://github.com/wanghesong2019/RouteLLM-Eng/actions"><img src="https://github.com/wanghesong2019/RouteLLM-Eng/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
@@ -95,8 +91,6 @@ ls -la docs/dashboard-preview.png docs/demo-terminal.gif 2>/dev/null
     <a href="https://github.com/wanghesong2019/RouteLLM-Eng"><img src="https://img.shields.io/github/stars/wanghesong2019/RouteLLM-Eng?style=social" alt="GitHub Stars"/></a>
   </p>
 ```
-
-> **注意**：如果用户在 Task 0.1 中说还没有 GitHub 仓库，则去掉 CI badge 和 Stars badge 两行，只保留原有的 4 个 badge。
 
 ### Task 1.2 `[AI]` 更新 README_zh.md 头部 badges
 
@@ -443,14 +437,14 @@ Community-contributable tasks — grab one!
 </a>
 ```
 
-> **注意**：如果用户在 Task 0.1 中说仓库路径不是 `wanghesong2019/RouteLLM-Eng`，请替换为用户提供的实际路径。如果用户还没有 GitHub 仓库，跳过此 Task。
+> **注意**：仓库已确认，直接执行。
 
 ### Task 5.4 `[AI]` 在 README_zh.md 末尾添加 Star History
 
 **文件**：`README_zh.md`
 **操作**：在引用代码块之后（文件末尾，第 229 行 ``` 之后）追加与 Task 5.3 完全相同的内容（Star History 不分语言）。
 
-> **条件**：同 Task 5.3。
+> **条件**：仓库已确认，直接执行。
 
 ---
 
@@ -532,7 +526,7 @@ python3 scripts/check_open_source_hygiene.py
 
 | 顺序 | Phase | Task 编号 | 执行者 | 说明 |
 |------|-------|----------|--------|------|
-| 1 | 0 | 0.1 | 用户 | 确认 GitHub 仓库路径 |
+| 1 | 0 | 0.1 | ✅已完成 | GitHub 仓库已确认：`wanghesong2019/RouteLLM-Eng` |
 | 2 | 0 | 0.2a | 用户 | 截 Dashboard 截图 |
 | 3 | 0 | 0.2b | 用户 | 录终端动图 |
 | 4 | 0 | 0.3 | AI | 检查素材就位情况 |
