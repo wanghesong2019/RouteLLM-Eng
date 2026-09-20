@@ -15,51 +15,14 @@
 
 后续所有 Task 中的 GitHub 链接均使用此地址，无需条件判断。
 
-### Task 0.2 `[用户]` 准备视觉素材
+### Task 0.2 `[已完成]` 视觉素材就位情况
 
-用户需要手动制作以下素材，放到 `docs/` 目录下：
+- `docs/dashboard-preview.png` ✅ 已就位（260KB）
+- `docs/demo-terminal.gif` ❌ 无（用户未录制，跳过终端动图相关 Task）
 
-#### 0.2a Dashboard 宽屏截图
-
-**操作**：
-1. 启动服务：`docker compose up -d`
-2. 浏览器打开 `http://localhost:8092`（Dashboard 面板）
-3. 发几条请求让面板有数据（至少包含：1 条寒暄类、1 条复杂问题类）
-4. 全屏截图，确保能看到：路由分布图、延迟分位图、缓存命中率、自适应阈值状态面板
-5. 保存为 `docs/dashboard-preview.png`（分辨率 1920×1080 以上）
-
-#### 0.2b 终端动图（Terminal GIF）
-
-**操作**：
-使用 `vhs`（推荐）或 `asciinema` 录制以下场景，输出为 `docs/demo-terminal.gif`：
-
-场景脚本（约 15 秒）：
-```
-# 场景1：L1 快速通道（寒暄类，<1ms 返回）
-curl -w "\n耗时: %{time_total}s\n" http://localhost:6060/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"router-bert-0.5","messages":[{"role":"user","content":"你好"}]}'
-
-# 场景2：L2/L3 路由到强模型（复杂问题）
-curl -w "\n耗时: %{time_total}s\n" http://localhost:6060/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_GATEWAY_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"router-bert-0.5","messages":[{"role":"user","content":"证明对于任意正整数n，n^3-n能被6整除"}]}'
-
-# 场景3：展示 Dashboard 中的路由分布
-echo "打开 http://localhost:8092 查看路由分布面板"
-```
-
-**如果用户无法录制 GIF**：AI 改用静态终端截图 `docs/demo-terminal.png` 替代，或跳过此素材。
-
-### Task 0.3 `[AI]` 确认素材就位
-
-执行以下检查，确认哪些素材已就位：
-```bash
-ls -la docs/dashboard-preview.png docs/demo-terminal.gif 2>/dev/null
-```
-记录哪些文件存在，后续 Task 根据实际存在的文件决定是否插入对应引用。
+后续执行规则：
+- Task 1.3 / 1.4（Dashboard 截图）：**执行**
+- Task 1.5 / 1.6（终端动图）：**跳过**
 
 ---
 
@@ -527,18 +490,17 @@ python3 scripts/check_open_source_hygiene.py
 | 顺序 | Phase | Task 编号 | 执行者 | 说明 |
 |------|-------|----------|--------|------|
 | 1 | 0 | 0.1 | ✅已完成 | GitHub 仓库已确认：`wanghesong2019/RouteLLM-Eng` |
-| 2 | 0 | 0.2a | 用户 | 截 Dashboard 截图 |
-| 3 | 0 | 0.2b | 用户 | 录终端动图 |
-| 4 | 0 | 0.3 | AI | 检查素材就位情况 |
-| 5 | 1 | 1.1-1.2 | AI | 更新头部 badges |
-| 6 | 1 | 1.3-1.6 | AI | 插入截图和动图（条件执行） |
-| 7 | 2 | 2.1-2.2 | AI | 插入省钱对比表 |
-| 8 | 3 | 3.1-3.2 | AI | 插入生态接入指南 |
-| 9 | 4 | 4.1-4.2 | AI | 插入选型对比表 |
-| 10 | 5 | 5.1-5.2 | AI | 更新 Roadmap |
-| 11 | 5 | 5.3-5.4 | AI | 添加 Star History（条件执行） |
-| 12 | 6 | 6.1-6.2 | AI | 修复 curl 占位符 |
-| 13 | 6 | 6.3 | AI | 验证架构图路径 |
-| 14 | 6 | 6.4 | AI | 运行卫生守卫 |
+| 2 | 0 | 0.2 | ✅已完成 | Dashboard 截图已就位；终端动图跳过 |
+| 3 | 1 | 1.1-1.2 | AI | 更新头部 badges |
+| 4 | 1 | 1.3-1.4 | AI | 插入 Dashboard 截图（执行） |
+| 5 | 1 | 1.5-1.6 | ⏭️跳过 | 终端动图素材不存在，跳过 |
+| 6 | 2 | 2.1-2.2 | AI | 插入省钱对比表 |
+| 7 | 3 | 3.1-3.2 | AI | 插入生态接入指南 |
+| 8 | 4 | 4.1-4.2 | AI | 插入选型对比表 |
+| 9 | 5 | 5.1-5.2 | AI | 更新 Roadmap |
+| 10 | 5 | 5.3-5.4 | AI | 添加 Star History |
+| 11 | 6 | 6.1-6.2 | AI | 修复 curl 占位符 |
+| 12 | 6 | 6.3 | AI | 验证架构图路径 |
+| 13 | 6 | 6.4 | AI | 运行卫生守卫 |
 
 > **AI 执行者注意**：Phase 0 的用户任务完成后（或用户说「跳过」后）再开始 Phase 1-6。每个 Task 完成后用 `git add` + `git commit` 提交，commit message 格式：`docs(readme): <简述>`。全部完成后一次性 `git push`。
