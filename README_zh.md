@@ -263,11 +263,15 @@ python scripts/check_open_source_hygiene.py --all  # 同时扫描 git 历史
 
 ## 🗺️ 路线图
 
+社区可认领任务——欢迎来挑！
+
+- [ ] `[good first issue]` Redis 外部缓存适配器（替代内存 LRU）
+- [ ] `[help wanted]` 飞书 / 钉钉 / Slack 预算告警 Webhook 通知
+- [ ] `[help wanted]` 流式响应首包延迟评测与首 Token 预测优化
+- [ ] `[feature]` OpenTelemetry 分布式追踪接入
 - [ ] 多路由器策略动态切换（BERT、Embedding 等）
-- [ ] 流式响应路由优化
 - [ ] MT-Bench 评测
 - [ ] 面板双语化（i18n）
-- [ ] 分布式追踪（OpenTelemetry）
 
 ## 🤝 贡献指南
 
@@ -294,3 +298,13 @@ Apache License 2.0（继承自上游）。见 [`LICENSE`](LICENSE)。
   year={2025}
 }
 ```
+
+## 📈 Star History
+
+<a href="https://star-history.com/#wanghesong2019/RouteLLM-Eng&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=wanghesong2019/RouteLLM-Eng&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=wanghesong2019/RouteLLM-Eng&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=wanghesong2019/RouteLLM-Eng&type=Date" />
+  </picture>
+</a>

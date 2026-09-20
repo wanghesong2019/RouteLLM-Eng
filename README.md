@@ -263,11 +263,15 @@ python scripts/check_open_source_hygiene.py --all  # Also scan git history
 
 ## 🗺️ Roadmap
 
+Community-contributable tasks — grab one!
+
+- [ ] `[good first issue]` Redis external cache adapter (replace in-memory LRU)
+- [ ] `[help wanted]` Feishu / DingTalk / Slack budget alert webhook notifications
+- [ ] `[help wanted]` Streaming response first-token latency optimization
+- [ ] `[feature]` OpenTelemetry distributed tracing integration
 - [ ] Multi-router strategy dynamic switching (BERT, Embedding, etc.)
-- [ ] Streaming response routing optimization
 - [ ] MT-Bench evaluation
 - [ ] Dashboard bilingual (i18n)
-- [ ] Distributed tracing (OpenTelemetry)
 
 ## 🤝 Contributing
 
@@ -294,3 +298,13 @@ Apache License 2.0 (inherited from upstream). See [`LICENSE`](LICENSE).
   year={2025}
 }
 ```
+
+## 📈 Star History
+
+<a href="https://star-history.com/#wanghesong2019/RouteLLM-Eng&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=wanghesong2019/RouteLLM-Eng&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=wanghesong2019/RouteLLM-Eng&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=wanghesong2019/RouteLLM-Eng&type=Date" />
+  </picture>
+</a>
