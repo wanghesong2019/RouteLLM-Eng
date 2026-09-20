@@ -98,7 +98,7 @@ LMSYS RouteLLM 是一项开创性的学术贡献：把简单问题路由到弱�
 ## 📐 架构
 
 <p align="center">
-  <img src="assets/RouteLLM-Architectural-diagram.jpg" alt="RouteLLM-Eng 架构" width="80%"/>
+  <img src="docs/architecture-zh.svg" alt="RouteLLM-Eng 架构" width="100%"/>
 </p>
 
 **关键设计决策（ADR-001）：** 模型推理与网关容器解耦。BERT 分类器运行在宿主机侧推理服务（`services/inference_server.py`），通过 HTTP 调用。这使得网关镜像仅 675MB（不含 torch/transformers），且推理可独立扩缩容。

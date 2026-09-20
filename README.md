@@ -98,7 +98,7 @@ Cache empty → HTTP 503 + Retry-After: 30
 ## 📐 Architecture
 
 <p align="center">
-  <img src="assets/RouteLLM-Architectural-diagram.jpg" alt="RouteLLM-Eng Architecture" width="80%"/>
+  <img src="docs/architecture-en.svg" alt="RouteLLM-Eng Architecture" width="100%"/>
 </p>
 
 **Key design decision (ADR-001):** Model inference is decoupled from the gateway container. The BERT classifier runs on a host-side inference service (`services/inference_server.py`), called via HTTP. This keeps the gateway image at 675MB (no torch/transformers) and lets you scale inference independently.
