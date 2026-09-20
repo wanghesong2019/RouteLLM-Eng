@@ -224,6 +224,15 @@ Random baseline APGR ≈ 0.5 — **APGR > 0.5 means routing is effective**.
 
 </details>
 
+## 🥊 How Is This Different from LiteLLM / One-API?
+
+| Dimension | One-API / New-API | LiteLLM Proxy | RouteLLM-Eng |
+|-----------|-------------------|---------------|--------------|
+| **Core positioning** | Channel management & billing relay | Unified SDK adapter & load balancing | **Content-difficulty-based semantic routing & dynamic cost reduction** |
+| **Routing decision** | Channel weight / round-robin | Random / client-specified | **L1 regex + L2 BERT win-rate + L3 dynamic budget closed-loop** |
+| **Quality guarantee** | None (pure forwarding) | None (failover only) | **Hard quality guardrail (complex tasks never downgraded, 429 backpressure)** |
+| **Architecture** | Go lightweight process | Python container | **Torch-free 675MB container + GPU inference decoupled (ADR-001)** |
+
 ## 📚 Documentation
 
 | Path | Content |
