@@ -112,7 +112,7 @@ Cache empty → HTTP 503 + Retry-After: 30
 ## 📐 Architecture
 
 <p align="center">
-  <img src="docs/architecture-en.svg" alt="RouteLLM-Eng Architecture" width="100%"/>
+  <img src="docs/architecture-en.svg" alt="RouteLLM-Eng Architecture" width="880"/>
 </p>
 
 **Key design decision (ADR-001):** Model inference is decoupled from the gateway container. The BERT classifier runs on a host-side inference service (`services/inference_server.py`), called via HTTP. This keeps the gateway image at 675MB (no torch/transformers) and lets you scale inference independently.
@@ -120,7 +120,7 @@ Cache empty → HTTP 503 + Retry-After: 30
 ## 🖼️ Dashboard Preview
 
 <p align="center">
-  <img src="docs/dashboard-preview.png" alt="RouteLLM-Eng Dashboard" width="90%"/>
+  <img src="docs/dashboard-preview.png" alt="RouteLLM-Eng Dashboard" width="880"/>
 </p>
 
 > Dark-themed ECharts dashboard with real-time routing distribution, latency percentiles, cache hit rate, and adaptive threshold state. Accessible at `:8092` — no auth required for internal deployment.

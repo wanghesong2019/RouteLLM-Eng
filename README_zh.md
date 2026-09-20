@@ -112,7 +112,7 @@ RouteLLM-Eng 到底能省多少钱？以下是基于 1,000,000 次混合业务�
 ## 📐 架构
 
 <p align="center">
-  <img src="docs/architecture-zh.svg" alt="RouteLLM-Eng 架构" width="100%"/>
+  <img src="docs/architecture-zh.svg" alt="RouteLLM-Eng 架构" width="880"/>
 </p>
 
 **关键设计决策（ADR-001）：** 模型推理与网关容器解耦。BERT 分类器运行在宿主机侧推理服务（`services/inference_server.py`），通过 HTTP 调用。这使得网关镜像仅 675MB（不含 torch/transformers），且推理可独立扩缩容。
@@ -120,7 +120,7 @@ RouteLLM-Eng 到底能省多少钱？以下是基于 1,000,000 次混合业务�
 ## 🖼️ 面板预览
 
 <p align="center">
-  <img src="docs/dashboard-preview.png" alt="RouteLLM-Eng 面板" width="90%"/>
+  <img src="docs/dashboard-preview.png" alt="RouteLLM-Eng 面板" width="880"/>
 </p>
 
 > 暗色主题 ECharts 面板，实时展示路由分布、延迟分位、缓存命中率与自适应阈值状态。访问 `:8092`——内网部署免鉴权。
