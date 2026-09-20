@@ -137,6 +137,44 @@ RULES: list[tuple[str, re.Pattern[str], str]] = [
         re.compile(r'\b[A-Za-z0-9\-]+\.taisure\.com\b'),
         '私有域名',
     ),
+    (
+        # 部署拓扑指纹：裸主机编号（如 ``33``/``43``）出现在「主机」位置
+        # （``<n>:<port>``、箭头链路 ``A → B``、或与部署动作词相邻）。
+        #
+        # 为什么单独一条规则：这类泄漏绕过了上面所有规则 —— 没有内网 IP
+        # 字面量、没有主机名、没有私有域名，却是完整可复现的内部访问链路。
+        # 实测漏检案例：``nginx → 33:16060 → 隧道 → 43:6060(网关)``。
+        #
+        # 误报控制：要求编号与端口或拓扑上下文同现，避免把「新增 43 例」
+        # 「43 秒」这类计数/耗时当成主机。
+        'topology_fingerprint',
+        re.compile(
+            r'(?:'
+            # 形态一：裸编号 + 端口，如 ``33:16060``。
+            # 必须排除 IP 字面量尾巴（``127.0.0.1:6070`` 里的 ``1:6070``）
+            # 与 ``0.0.0.0:6060`` —— 前者有 ``.`` 前缀，故用否定后顾。
+            r'(?<![\d.])\b[1-9]\d{0,2}:(?:[1-9]\d{3,4})\b(?![.\d])'
+            # 形态二：箭头后的裸编号 + 端口（如 ``→ 43:6060``）
+            # 要求带端口，否则「→ 43 秒」「→ 68.78x」这类会误报
+            r'|(?:→|->|-->)\s*[1-9]\d{0,2}\s*:\s*[1-9]\d{2,4}\b'
+            # 形态三：编号紧邻部署/构建动作词。
+            # 注意两点（都实测踩过）：
+            #   1) 中文词后不能加 ``\b`` —— ``构建后`` 的两个汉字在 Unicode
+            #      语义下都是 word char，其间不存在边界，加了 ``\b`` 反而
+            #      匹配不上（``33 构建后传输镜像`` 漏检）。
+            #   2) 数字后必须跟非数字，否则 ``宿主机 6060`` 会被截成 ``606``
+            #      误报（compose 里的端口说明属正常内容）。
+            r'|\b[1-9]\d{0,2}(?![\d:])\s*(?:部署机|构建机|跳板机|宿主机|构建|部署|跳板)'
+            r'|\b(?:部署机|构建机|跳板机|宿主机)\s*[1-9]\d{0,2}(?![\d:])'
+            # 形态四：隧道 / 镜像传输等拓扑动作 + 近处的「主机编号:端口」。
+            # 必须带端口才算指纹 —— 仅凭「数字 + 传输镜像」会把表格序号
+            # （``| 6 | ... 传输镜像``）误判为主机编号（实测踩过）。
+            r'|(?<![\d.])\b[1-9]\d{0,2}:\d{2,5}\b(?![.\d])'
+            r'(?=[^\n]{0,40}(?:隧道|NAT hairpin|传输镜像|docker save))'
+            r')'
+        ),
+        '部署拓扑指纹（主机编号/链路）',
+    ),
 ]
 
 # 部署留档类文件（本机环境产物，不应入库）
@@ -176,12 +214,18 @@ def iter_files(root: str = '.', include_history: bool = False):
 
     注意：守卫脚本自身会被排除 —— 它为了检测而必须包含主机名/域名的
     字面模式（如 'taisure.com'），否则无法工作。扫描自身属于自指误报。
+
+    同理，**守卫的回归测试**（``tests/test_open_source_hygiene.py``）也必须
+    排除：它作为测试夹具，必须内嵌「泄漏样例」来断言守卫能检出。若扫描它，
+    守卫会对自己的测试样本报警，形成无法收敛的自指误报。
     """
     self_name = os.path.basename(__file__)
+    # 守卫回归测试：夹具中内嵌泄漏样例，属预期，跳过
+    guard_test_name = 'test_open_source_hygiene.py'
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
-            if fn == self_name:
+            if fn == self_name or fn == guard_test_name:
                 continue
             ap = os.path.join(dirpath, fn)
             rp = os.path.relpath(ap, root)
@@ -349,6 +393,9 @@ def main(argv: list[str] | None = None) -> int:
         print('  - 环境指纹：文档中的内网 IP / 主机名替换为占位符（如 <host>、<internal-ip>）')
     if 'private_domain' in by_cat:
         print('  - 私有域名：替换为通用示例域名（如 api.openai.com）')
+    if 'topology_fingerprint' in by_cat:
+        print('  - 部署拓扑指纹：去掉主机编号与链路细节，'
+              '改写为通用表述（如「跨机器调用推理服务」）')
     if 'credential' in by_cat or 'credential_history' in by_cat:
         print('  - 凭据：立即轮换该密钥，并从工作区/历史中移除')
     if 'gitignore_gap' in by_cat:
