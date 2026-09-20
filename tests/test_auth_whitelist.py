@@ -1,6 +1,6 @@
 """鉴权白名单测试（TDD）。
 
-背景：公网通过 nginx → 33:16060 → 隧道 → 43:6060(网关) 访问 dashboard，
+背景：dashboard 经反向代理暴露在公网后，
 点击页面导航"运行时配置"（<a href="/config">）时报 401 invalid_api_key。
 
 根因：网关 auth.py 的 WHITELIST_EXACT 里有 "/dashboard"，但没有 "/config"，

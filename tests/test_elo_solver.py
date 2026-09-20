@@ -173,7 +173,7 @@ def test_faster_than_lbfgs_on_real_data():
         get_weightings(cosine_sims) 才复现线上的 Hessian 条件，
         newton-cholesky 才展现优势（~87ms vs ~331ms）。
 
-    实测（43，55361 行）：
+    实测（55361 行）：
         Elo 求解  : lbfgs 331ms → newton-cholesky  87ms（3.8x）
         端到端路由: lbfgs 394ms → newton-cholesky 185ms（2.1x）
     """

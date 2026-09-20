@@ -42,7 +42,7 @@ class BERTRouter(Router):
            │ HTTP (win_rate)
            ▼
 ┌─────────────────────────────┐
-│  host:43 推理服务            │
+│  host 推理服务               │
 │  - BERT (xlm-roberta)        │
 │  - CausalLLM (LLaMA-3-8B)    │
 │  - transformers + CUDA torch │
